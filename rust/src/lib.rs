@@ -103,7 +103,7 @@ fn submit_code(code: String) -> String {
     match engine.runtime.block_on(engine.client.sign_in(token, code.trim())) {
         Ok(user) => {
             engine.login_token = None;
-            ok(format!("Вход выполнен: {}", user.name().unwrap_or("пользователь")))
+            ok(format!("Вход выполнен: {}", user.first_name().unwrap_or("пользователь")))
         }
         Err(SignInError::PasswordRequired(password_token)) => {
             engine.password_token = Some(password_token);
@@ -135,7 +135,7 @@ fn submit_password(password: String) -> String {
     {
         Ok(user) => {
             engine.login_token = None;
-            ok(format!("Вход выполнен: {}", user.name().unwrap_or("пользователь")))
+            ok(format!("Вход выполнен: {}", user.first_name().unwrap_or("пользователь")))
         }
         Err(SignInError::InvalidPassword(_)) => err("неверный пароль Telegram"),
         Err(e) => err(e.to_string()),
