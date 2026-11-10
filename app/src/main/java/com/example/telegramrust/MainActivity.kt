@@ -84,7 +84,7 @@ class MainActivity : Activity() {
                 return@setOnClickListener
             }
             status.text = "Запрашиваю код…"
-            runRust { RustBridge.nativeRequestCode(id, hash, phoneValue, File(filesDir, "telegram.session").absolutePath) }
+            runRust({ RustBridge.nativeRequestCode(id, hash, phoneValue, File(filesDir, "telegram.session").absolutePath) })
         }
 
         codeButton.setOnClickListener {
@@ -94,7 +94,7 @@ class MainActivity : Activity() {
                 return@setOnClickListener
             }
             status.text = "Проверяю код…"
-            runRust { RustBridge.nativeSubmitCode(value) }
+            runRust({ RustBridge.nativeSubmitCode(value) })
         }
 
         passwordButton.setOnClickListener {
@@ -104,15 +104,15 @@ class MainActivity : Activity() {
                 return@setOnClickListener
             }
             status.text = "Проверяю пароль…"
-            runRust { RustBridge.nativeSubmitPassword(value) }
+            runRust({ RustBridge.nativeSubmitPassword(value) })
         }
 
         dialogsButton.setOnClickListener {
             status.text = "Загружаю диалоги…"
-            runRust { RustBridge.nativeDialogs() } { result ->
+            runRust({ RustBridge.nativeDialogs() }, { result ->
                 dialogs.text = result
                 status.text = "Диалоги загружены"
-            }
+            })
         }
 
         setContentView(root)
