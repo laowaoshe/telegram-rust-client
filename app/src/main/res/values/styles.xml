@@ -1,0 +1,6 @@
+<resources>
+    <style name="Theme.TelegramRustClient" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:colorAccent">#229ED9</item>
+    </style>
+</resources>

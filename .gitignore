@@ -1,0 +1,8 @@
+.gradle/
+local.properties
+.idea/
+/build/
+*/build/
+rust/target/
+secrets.toml
+app/src/main/jniLibs/
