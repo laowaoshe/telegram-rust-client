@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex, OnceLock};
 
-use grammers_client::{Client, LoginToken, PasswordToken, SignInError};
+use grammers_client::{Client, SignInError};
+use grammers_client::client::{LoginToken, PasswordToken};
 use grammers_mtsender::SenderPool;
 use grammers_session::storages::SqliteSession;
 use jni::objects::{JClass, JString};
