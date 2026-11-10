@@ -1,10 +1,13 @@
-# Telegram Rust Client — AndroidIDE compatible starter
+# Telegram Rust Client
 
-This is a small Android starter using a classic Android View UI and a Rust JNI core placeholder.
-It does not connect to Telegram yet. The next stage is MTProto authorization and chat loading.
+Android client prototype with a Kotlin interface and a Rust MTProto core.
 
-Build in AndroidIDE with `:app:assembleDebug`.
+## Local AndroidIDE build
 
-## Build on GitHub Actions
+Open the project in AndroidIDE and run `:app:assembleDebug`.
 
-Create a GitHub repository, upload this project, then open **Actions → Build Android APK → Run workflow**. The generated APK will be available under **Artifacts**.
+## GitHub Actions build
+
+Push to `main`, then download the `telegram-rust-client-debug` artifact from the successful workflow run.
+
+The app stores the Telegram session only in its private app storage. API values and passwords are not sent to this repository.

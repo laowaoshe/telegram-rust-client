@@ -6,4 +6,8 @@ object RustBridge {
     }
 
     external fun nativeBuildInfo(): String
+    external fun nativeRequestCode(apiId: Int, apiHash: String, phone: String, sessionPath: String): String
+    external fun nativeSubmitCode(code: String): String
+    external fun nativeSubmitPassword(password: String): String
+    external fun nativeDialogs(): String
 }

@@ -2,6 +2,8 @@ name: Build Android APK
 
 on:
   workflow_dispatch:
+  push:
+    branches: [ main ]
 
 jobs:
   build:
@@ -19,26 +21,24 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+          targets: aarch64-linux-android, armv7-linux-androideabi, x86_64-linux-android
 
       - name: Select Android NDK
         shell: bash
         run: |
-          NDK_DIR="$(find "$ANDROID_HOME/ndk" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
-          echo "ANDROID_NDK_HOME=$NDK_DIR" >> "$GITHUB_ENV"
-          echo "Using NDK: $NDK_DIR"
+          echo "ANDROID_NDK_HOME=$(find "$ANDROID_SDK_ROOT/ndk" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)" >> "$GITHUB_ENV"
 
       - name: Install cargo-ndk
-        run: cargo install cargo-ndk
+        run: cargo install cargo-ndk --locked
 
-      - name: Build Rust native library
+      - name: Build Rust native libraries
         working-directory: rust
         run: cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 -o ../app/src/main/jniLibs build --release
 
       - name: Set up Gradle 6.1.1
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: 6.1.1
+          gradle-version: '6.1.1'
 
       - name: Build APK
         run: gradle :app:assembleDebug --no-daemon
