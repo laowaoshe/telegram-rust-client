@@ -22,4 +22,5 @@ android {
 
 dependencies {
     implementation("org.jetbrains.kotlin:kotlin-stdlib:1.4.0")
+    implementation("com.google.zxing:core:3.5.3")
 }

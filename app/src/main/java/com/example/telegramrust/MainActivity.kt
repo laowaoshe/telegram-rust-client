@@ -1,16 +1,19 @@
 package com.example.telegramrust
 
 import android.app.Activity
-import android.content.Intent
 import android.graphics.Color
-import android.net.Uri
+import android.graphics.Bitmap
 import android.os.Bundle
 import android.text.InputType
 import android.view.Gravity
+import android.view.View
 import android.widget.Button
 import android.widget.EditText
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.MultiFormatWriter
 import java.io.File
 
 class MainActivity : Activity() {
@@ -21,6 +24,7 @@ class MainActivity : Activity() {
     private lateinit var code: EditText
     private lateinit var password: EditText
     private lateinit var dialogs: TextView
+    private lateinit var qrImage: ImageView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -55,11 +59,16 @@ class MainActivity : Activity() {
         password = field("Пароль двухэтапной проверки Telegram", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD)
 
         val requestButton = Button(this).apply { text = "Получить код Telegram" }
-        val qrButton = Button(this).apply { text = "Войти через Telegram" }
+        val qrButton = Button(this).apply { text = "Показать QR-код" }
         val qrCheckButton = Button(this).apply { text = "Проверить QR-вход" }
         val codeButton = Button(this).apply { text = "Войти по коду" }
         val passwordButton = Button(this).apply { text = "Войти по паролю 2FA" }
         val dialogsButton = Button(this).apply { text = "Показать диалоги" }
+        qrImage = ImageView(this).apply {
+            adjustViewBounds = true
+            setPadding(12, 12, 12, 12)
+            visibility = View.GONE
+        }
         status = text("Готово к подключению", 16f)
         dialogs = text("", 15f)
 
@@ -74,6 +83,7 @@ class MainActivity : Activity() {
         root.addView(password)
         root.addView(passwordButton)
         root.addView(dialogsButton)
+        root.addView(qrImage)
         root.addView(status)
         root.addView(dialogs)
 
@@ -101,11 +111,12 @@ class MainActivity : Activity() {
             status.text = "Создаю ссылку входа…"
             runRust({ RustBridge.nativeRequestQr(id, hash, sessionPath) }) { result ->
                 if (result.startsWith("tg://login?")) {
-                    status.text = "Подтверди вход в открывшемся Telegram, затем нажми «Проверить QR-вход»"
                     try {
-                        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(result)))
+                        qrImage.setImageBitmap(makeQrBitmap(result))
+                        qrImage.visibility = View.VISIBLE
+                        status.text = "Открой Telegram на другом устройстве: Настройки → Устройства → Сканировать QR-код. Наведи камеру на QR-код, затем нажми «Проверить QR-вход»."
                     } catch (_: Exception) {
-                        status.text = "Не удалось открыть Telegram. Установи официальный Telegram."
+                        status.text = "Не удалось создать QR-код"
                     }
                 } else {
                     status.text = result
@@ -147,6 +158,18 @@ class MainActivity : Activity() {
         }
 
         setContentView(root)
+    }
+
+    private fun makeQrBitmap(value: String): Bitmap {
+        val size = (resources.displayMetrics.widthPixels * 0.72f).toInt().coerceAtLeast(480)
+        val matrix = MultiFormatWriter().encode(value, BarcodeFormat.QR_CODE, size, size)
+        val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.RGB_565)
+        for (x in 0 until size) {
+            for (y in 0 until size) {
+                bitmap.setPixel(x, y, if (matrix[x, y]) Color.BLACK else Color.WHITE)
+            }
+        }
+        return bitmap
     }
 
     private fun runRust(call: () -> String, after: ((String) -> Unit)? = null) {
