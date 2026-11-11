@@ -24,8 +24,14 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.Switch
 import android.widget.TextView
 import android.view.animation.DecelerateInterpolator
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
+import java.io.FileOutputStream
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.MultiFormatWriter
 import java.io.File
@@ -59,11 +65,14 @@ class MainActivity : Activity() {
     private lateinit var chatTitle: TextView
     private lateinit var qrImage: ImageView
     private lateinit var scroll: ScrollView
+    private lateinit var floatingBack: Button
     private var selectedDialog = -1
     private var selectedDialogTitle = ""
+    private var selectedDialogUsername = ""
     private var voiceRecorder: MediaRecorder? = null
     private var voiceFile: java.io.File? = null
     private var recordingVoice = false
+    private var pendingFilePath: String? = null
 
     private val black = Color.BLACK
     // Полупрозрачные поверхности оставляют живой фон видимым сквозь «стекло».
@@ -174,7 +183,16 @@ class MainActivity : Activity() {
             voiceRecorder?.release()
             voiceRecorder = null
             recordingVoice = false
-            status.text = "Голосовое сохранено: ${voiceFile?.name ?: "файл"}"
+            val file = voiceFile
+            if (file != null && selectedDialog >= 0) {
+                status.text = "Отправляю голосовое…"
+                runRust({ RustBridge.nativeSendFile(selectedDialog, file.absolutePath, "🎙 Голосовое") }) { result ->
+                    status.text = result
+                    if (!result.startsWith("Ошибка:")) loadMessages(selectedDialog)
+                }
+            } else {
+                status.text = "Голосовое сохранено: ${file?.name ?: "файл"}"
+            }
             return
         }
 
@@ -252,15 +270,41 @@ class MainActivity : Activity() {
         val name = label(selectedDialogTitle.ifBlank { "Пользователь" }, 25f)
         name.gravity = Gravity.CENTER
         profileScreen.addView(name)
-        val username = label("Профиль Telegram", 15f, muted)
+        val username = label(
+            if (selectedDialogUsername.isBlank()) "Профиль Telegram" else "@$selectedDialogUsername",
+            15f,
+            muted
+        )
         username.gravity = Gravity.CENTER
         profileScreen.addView(username)
         addGap(profileScreen, 22)
         profileScreen.addView(divider())
         profileScreen.addView(label("Информация", 15f, muted))
         profileScreen.addView(label("Имя: ${selectedDialogTitle.ifBlank { "Не указано" }}", 16f))
-        profileScreen.addView(label("Фото и описание профиля появятся после подключения Telegram profile API.", 14f, muted))
+        profileScreen.addView(label("Настрой локальное отображение профиля.", 14f, muted))
         addGap(profileScreen, 16)
+        val bioInput = EditText(this).apply {
+            hint = "О себе"
+            textSize = 15f
+            setTextColor(white)
+            setHintTextColor(muted)
+            setSingleLine(false)
+            minLines = 2
+            background = glass(surfaceSoft, 16)
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+            setText(getSharedPreferences("profile", MODE_PRIVATE).getString("bio", ""))
+        }
+        profileScreen.addView(bioInput)
+        addGap(profileScreen, 8)
+        val saveProfile = glassButton("Сохранить профиль", purpleDark)
+        profileScreen.addView(saveProfile)
+        saveProfile.setOnClickListener {
+            getSharedPreferences("profile", MODE_PRIVATE).edit()
+                .putString("bio", bioInput.text.toString().trim())
+                .apply()
+            status.text = "Профиль сохранён на устройстве"
+        }
+        addGap(profileScreen, 12)
         val share = glassButton("Поделиться контактом", purpleDark)
         val media = glassButton("Общие медиа", surfaceSoft)
         profileScreen.addView(share)
@@ -380,8 +424,6 @@ class MainActivity : Activity() {
         }
         val brand = text("Telegram", 19f)
         topBar.addView(brand, LinearLayout.LayoutParams(0, -2, 1f))
-        val refreshButton = glassButton("⟳", surfaceSoft)
-        topBar.addView(refreshButton)
         chatPanel.addView(topBar)
         addGap(chatPanel, 10)
 
@@ -524,6 +566,16 @@ class MainActivity : Activity() {
         settingsScreen.addView(text("Тема: AMOLED Glass", 16f))
         settingsScreen.addView(text("Акцент: глубокий фиолетовый", 16f, muted))
         settingsScreen.addView(text("Сессия сохраняется локально на устройстве.", 15f, muted))
+        fun settingToggle(title: String, checked: Boolean): Switch = Switch(this).apply {
+            text = title
+            textSize = 15f
+            isChecked = checked
+            setTextColor(white)
+            setPadding(0, dp(6), 0, dp(6))
+        }
+        settingsScreen.addView(settingToggle("Плавные анимации", true))
+        settingsScreen.addView(settingToggle("Показывать предпросмотр сообщения", true))
+        settingsScreen.addView(settingToggle("Вибрация при отправке", false))
 
         profileScreen = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -567,6 +619,7 @@ class MainActivity : Activity() {
         fun openChats() {
             authPanel.visibility = View.GONE
             chatPanel.visibility = View.VISIBLE
+            floatingBack.visibility = View.GONE
             showScreen(dialogsScreen)
         }
 
@@ -618,27 +671,40 @@ class MainActivity : Activity() {
         dialogsButton.setOnClickListener {
             status.text = "Загружаю диалоги…"
             runRust({ RustBridge.nativeDialogs() }) { result ->
+                if (result.startsWith("Ошибка:")) {
+                    status.text = result
+                    return@runRust
+                }
                 showDialogs(result)
                 openChats()
                 status.text = "Диалоги загружены"
             }
         }
-        refreshButton.setOnClickListener {
-            status.text = "Обновляю диалоги…"
-            runRust({ RustBridge.nativeDialogs() }) { result -> showDialogs(result); showScreen(dialogsScreen); status.text = "Диалоги обновлены" }
-        }
         chatsNav.setOnClickListener { showScreen(dialogsScreen) }
         contactsNav.setOnClickListener { showScreen(contactsScreen) }
         settingsNav.setOnClickListener { showScreen(settingsScreen) }
-        backButton.setOnClickListener { showScreen(dialogsScreen) }
+        backButton.setOnClickListener {
+            floatingBack.visibility = View.GONE
+            showScreen(dialogsScreen)
+        }
         sendButton.setOnClickListener {
             if (selectedDialog < 0) { status.text = "Сначала выбери диалог"; return@setOnClickListener }
             val value = messageInput.text.toString().trim()
             if (value.isEmpty()) { status.text = "Введи сообщение"; return@setOnClickListener }
             status.text = "Отправляю…"
-            runRust({ RustBridge.nativeSendMessage(selectedDialog, value) }) { result ->
+            val filePath = pendingFilePath
+            val send = if (filePath != null) {
+                { RustBridge.nativeSendFile(selectedDialog, filePath, "") }
+            } else {
+                { RustBridge.nativeSendMessage(selectedDialog, value) }
+            }
+            runRust(send) { result ->
                 status.text = result
-                if (!result.startsWith("Ошибка:")) { messageInput.text.clear(); loadMessages(selectedDialog) }
+                if (!result.startsWith("Ошибка:")) {
+                    pendingFilePath = null
+                    messageInput.text.clear()
+                    loadMessages(selectedDialog)
+                }
             }
         }
         profileButton.setOnClickListener { openProfile { target -> showScreen(target) } }
@@ -651,6 +717,18 @@ class MainActivity : Activity() {
             addView(backdrop, FrameLayout.LayoutParams(-1, -1))
             addView(scroll, FrameLayout.LayoutParams(-1, -1))
         }
+        floatingBack = glassButton("‹", surfaceSoft)
+        floatingBack.visibility = View.GONE
+        floatingBack.setOnClickListener {
+            floatingBack.visibility = View.GONE
+            showScreen(dialogsScreen)
+        }
+        content.addView(
+            floatingBack,
+            FrameLayout.LayoutParams(dp(58), dp(54), Gravity.TOP or Gravity.START).apply {
+                setMargins(dp(10), dp(12), 0, 0)
+            }
+        )
         setContentView(content)
         authPanel.alpha = 0f
         authPanel.translationY = dp(10).toFloat()
@@ -673,7 +751,9 @@ class MainActivity : Activity() {
         dialogs.removeAllViews()
         if (result.startsWith("Ошибка:")) { status.text = result; return }
         val rows = result.lines().filter { it.contains("|") }
-            .filter { query.isBlank() || it.substringAfter("|").contains(query.trim(), ignoreCase = true) }
+            .filter {
+                query.isBlank() || it.substringAfter("|").contains(query.trim(), ignoreCase = true)
+            }
         if (rows.isEmpty()) {
             val empty = TextView(this).apply {
                 text = if (query.isBlank()) "Диалогов пока нет" else "Ничего не найдено"
@@ -687,7 +767,11 @@ class MainActivity : Activity() {
         rows.forEachIndexed { rowIndex, row ->
             val parts = row.split("|", limit = 2)
             val index = parts[0].toIntOrNull() ?: return@forEachIndexed
-            val title = parts.getOrNull(1)?.ifBlank { "Без названия" } ?: "Без названия"
+            val metadata = row.split("|", limit = 5)
+            val title = metadata.getOrNull(1)?.ifBlank { "Без названия" } ?: "Без названия"
+            val preview = metadata.getOrNull(2)?.ifBlank { "Нет сообщений" } ?: "Нет сообщений"
+            val time = shortTime(metadata.getOrNull(3).orEmpty())
+            val username = metadata.getOrNull(4).orEmpty()
             val item = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
@@ -705,13 +789,22 @@ class MainActivity : Activity() {
             titleView.maxLines = 1
             titleView.ellipsize = android.text.TextUtils.TruncateAt.END
             details.addView(titleView)
-            details.addView(label("Нажмите, чтобы открыть диалог", 12f, muted))
+            val previewView = label(preview, 12f, muted)
+            previewView.maxLines = 1
+            previewView.ellipsize = android.text.TextUtils.TruncateAt.END
+            details.addView(previewView)
             item.addView(details, LinearLayout.LayoutParams(0, -2, 1f))
+            if (time.isNotBlank()) {
+                val timeView = label(time, 11f, muted)
+                item.addView(timeView)
+            }
             item.setOnTouchListener { view, event -> pressAnimation(view, event) }
             item.setOnClickListener {
                 selectedDialog = index
                 selectedDialogTitle = title
+                selectedDialogUsername = username
                 chatTitle.text = title
+                floatingBack.visibility = View.VISIBLE
                 chatScreen.visibility = View.VISIBLE
                 dialogsScreen.visibility = View.GONE
                 contactsScreen.visibility = View.GONE
@@ -748,29 +841,71 @@ class MainActivity : Activity() {
             }
             val rows = result.lines().filter { it.isNotBlank() }
             if (rows.isEmpty()) addMessageBlock("Сообщений пока нет", false, false)
-            else rows.forEach { row ->
-                val parts = row.split("\t", limit = 2)
+            else {
+                var previousDate = ""
+                rows.forEach { row ->
+                val parts = row.split("\t", limit = 3)
                 val outgoing = parts.firstOrNull() == "OUT"
-                val value = parts.getOrNull(1) ?: row
-                addMessageBlock(value.replace(Regex("^#[0-9]+[[:space:]]"), ""), outgoing, false)
+                val timestamp = parts.getOrNull(1).orEmpty()
+                val value = parts.getOrNull(2) ?: row
+                val date = shortDate(timestamp)
+                if (date.isNotBlank() && date != previousDate) {
+                    addDateDivider(date)
+                    previousDate = date
+                }
+                addMessageBlock(
+                    value.replace(Regex("^#[0-9]+[[:space:]]"), ""),
+                    outgoing,
+                    false,
+                    shortTime(timestamp)
+                )
+                }
             }
             status.text = "История загружена"
             scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
         }
     }
 
-    private fun addMessageBlock(value: String, outgoing: Boolean, isError: Boolean) {
-        val block = TextView(this).apply {
+    private fun addDateDivider(value: String) {
+        val divider = TextView(this).apply {
+            text = value
+            textSize = 12f
+            setTextColor(muted)
+            gravity = Gravity.CENTER
+            setPadding(dp(12), dp(6), dp(12), dp(6))
+            background = glass(Color.argb(100, 35, 35, 50), 14)
+        }
+        val params = LinearLayout.LayoutParams(-2, -2)
+        params.gravity = Gravity.CENTER_HORIZONTAL
+        params.setMargins(0, dp(10), 0, dp(4))
+        messages.addView(divider, params)
+    }
+
+    private fun addMessageBlock(value: String, outgoing: Boolean, isError: Boolean, time: String = "") {
+        val block = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(10), dp(14), dp(7))
+            background = glass(when {
+                isError -> Color.rgb(62, 20, 30)
+                outgoing -> purple
+                else -> Color.argb(168, 17, 17, 22)
+            }, 18)
+        }
+        val body = TextView(this).apply {
             text = value
             textSize = 16f
             maxWidth = (resources.displayMetrics.widthPixels * 0.82f).toInt()
             setTextColor(white)
-            setPadding(dp(18), dp(12), dp(18), dp(12))
-            background = glass(when {
-                isError -> Color.rgb(62, 20, 30)
-                outgoing -> purple
-                else -> Color.rgb(17, 17, 22)
-            }, 18)
+        }
+        block.addView(body)
+        if (time.isNotBlank()) {
+            val timestamp = TextView(this).apply {
+                text = time
+                textSize = 11f
+                setTextColor(Color.argb(190, 245, 243, 255))
+                gravity = Gravity.END
+            }
+            block.addView(timestamp)
         }
         val params = LinearLayout.LayoutParams(-2, -2)
         params.gravity = if (outgoing) Gravity.END else Gravity.START
@@ -778,14 +913,54 @@ class MainActivity : Activity() {
         messages.addView(block, params)
     }
 
+    private fun shortTime(value: String): String {
+        val date = parseTimestamp(value) ?: return ""
+        return SimpleDateFormat("HH:mm", Locale.getDefault()).format(date)
+    }
+
+    private fun shortDate(value: String): String {
+        val date = parseTimestamp(value) ?: return ""
+        val raw = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(date)
+        val dayFormat = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
+        val yesterday = dayFormat.format(Date(System.currentTimeMillis() - 86_400_000L))
+        return when (raw) {
+            dayFormat.format(Date()) -> "Сегодня"
+            yesterday -> "Вчера"
+            else -> raw
+        }
+    }
+
+    private fun parseTimestamp(value: String): Date? {
+        if (value.length < 19) return null
+        val normalized = value.substring(0, 19) + "Z"
+        return try {
+            SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssX", Locale.US).apply {
+                timeZone = TimeZone.getTimeZone("UTC")
+            }.parse(normalized)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == REQUEST_FILE && resultCode == RESULT_OK) {
             val uri: Uri = data?.data ?: return
             val name = uri.lastPathSegment?.substringAfterLast('/') ?: "выбранный файл"
+            val target = java.io.File(cacheDir, "upload-${System.currentTimeMillis()}-$name")
+            try {
+                contentResolver.openInputStream(uri)?.use { input ->
+                    FileOutputStream(target).use { output -> input.copyTo(output) }
+                } ?: throw IllegalStateException("не удалось открыть файл")
+                pendingFilePath = target.absolutePath
+            } catch (error: Exception) {
+                pendingFilePath = null
+                status.text = "Не удалось подготовить файл: ${error.message ?: "ошибка"}"
+                return
+            }
             messageInput.setText("📎 $name")
             messageInput.setSelection(messageInput.length())
-            status.text = "Файл выбран. Отправка медиа через Rust API будет добавлена следующим этапом."
+            status.text = "Файл готов к отправке"
         }
     }
 

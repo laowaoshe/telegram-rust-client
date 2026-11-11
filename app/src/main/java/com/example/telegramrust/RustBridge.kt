@@ -15,4 +15,5 @@ object RustBridge {
     external fun nativeSearchUsername(query: String): String
     external fun nativeMessages(index: Int): String
     external fun nativeSendMessage(index: Int, text: String): String
+    external fun nativeSendFile(index: Int, path: String, caption: String): String
 }

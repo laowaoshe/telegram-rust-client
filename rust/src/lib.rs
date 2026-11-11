@@ -2,6 +2,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as Base64Engine};
 use grammers_client::client::{LoginToken, PasswordToken};
+use grammers_client::message::InputMessage;
 use grammers_client::tl;
 use grammers_client::{Client, SignInError};
 use grammers_mtsender::SenderPool;
@@ -307,7 +308,33 @@ fn dialogs() -> String {
         let mut lines = Vec::new();
         while let Some(dialog) = dialogs.next().await.map_err(|e| e.to_string())? {
             let peer = dialog.peer();
-            lines.push(format!("{}|{}", lines.len(), peer.name().unwrap_or("Без названия")));
+            let title = peer.name().unwrap_or("Без названия").replace('|', " ");
+            let username = peer.username().unwrap_or("").replace('|', " ");
+            let (preview, date) = dialog
+                .last_message
+                .as_ref()
+                .map(|message| {
+                    (
+                        message
+                            .text()
+                            .replace('|', " ")
+                            .replace('\n', " ")
+                            .replace('\r', " ")
+                            .replace('\t', " ")
+                            .trim()
+                            .to_string(),
+                        message.date().to_string(),
+                    )
+                })
+                .unwrap_or_else(|| ("Нет сообщений".to_string(), String::new()));
+            lines.push(format!(
+                "{}|{}|{}|{}|{}",
+                lines.len(),
+                title,
+                if preview.is_empty() { "Медиа" } else { &preview },
+                date,
+                username
+            ));
         }
         Ok::<_, String>(lines)
     });
@@ -348,13 +375,26 @@ fn messages(index: usize) -> String {
     };
 
     let result = with_dialog(engine, index, |peer, client| async move {
-        let mut iterator = client.iter_messages(peer).limit(100);
+        // Без лимита: Telegram сам отдаёт историю страницами, а iterator
+        // продолжает запрашивать следующие страницы до конца диалога.
+        let mut iterator = client.iter_messages(peer);
         let mut lines = Vec::new();
         while let Some(message) = iterator.next().await.map_err(|e| e.to_string())? {
             let text = message.text().trim();
-            if !text.is_empty() {
+            if !text.is_empty() || message.media().is_some() {
                 let direction = if message.outgoing() { "OUT" } else { "IN" };
-                lines.push(format!("{}\t#{} {}", direction, message.id(), text));
+                let body = if text.is_empty() { "Медиа" } else { text };
+                let body = body
+                    .replace('\t', " ")
+                    .replace('\n', " ")
+                    .replace('\r', " ");
+                lines.push(format!(
+                    "{}\t{}\t#{} {}",
+                    direction,
+                    message.date(),
+                    message.id(),
+                    body
+                ));
             }
         }
         lines.reverse();
@@ -388,6 +428,34 @@ fn send_message(index: usize, text: String) -> String {
             .send_message(peer, text)
             .await
             .map(|_| "Сообщение отправлено.".to_string())
+            .map_err(|e| e.to_string())
+    });
+
+    match result {
+        Ok(value) => ok(value),
+        Err(e) => err(e),
+    }
+}
+
+fn send_file(index: usize, path: String, caption: String) -> String {
+    if path.trim().is_empty() {
+        return err("файл не выбран");
+    }
+    let mut slot = match engine_slot().lock() {
+        Ok(value) => value,
+        Err(_) => return err("внутреннее состояние Rust повреждено"),
+    };
+    let engine = match slot.as_mut() {
+        Some(value) => value,
+        None => return err("сначала подключись к Telegram"),
+    };
+
+    let result = with_dialog(engine, index, |peer, client| async move {
+        let uploaded = client.upload_file(&path).await.map_err(|e| e.to_string())?;
+        client
+            .send_message(peer, InputMessage::new().file(uploaded).text(caption))
+            .await
+            .map(|_| "Файл отправлен.".to_string())
             .map_err(|e| e.to_string())
     });
 
@@ -539,6 +607,23 @@ pub extern "system" fn Java_com_example_telegramrust_RustBridge_nativeSendMessag
         Ok(text) if index >= 0 => send_message(index as usize, text),
         Ok(_) => err("неверный номер диалога"),
         Err(e) => err(e),
+    };
+    jstring(&mut env, value)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_example_telegramrust_RustBridge_nativeSendFile(
+    mut env: JNIEnv,
+    _class: JClass,
+    index: jint,
+    path: JString,
+    caption: JString,
+) -> jstring {
+    let values = (take_string(&mut env, path), take_string(&mut env, caption));
+    let value = match values {
+        (Ok(path), Ok(caption)) if index >= 0 => send_file(index as usize, path, caption),
+        (Ok(_), Ok(_)) => err("неверный номер диалога"),
+        (Err(e), _) | (_, Err(e)) => err(e),
     };
     jstring(&mut env, value)
 }
