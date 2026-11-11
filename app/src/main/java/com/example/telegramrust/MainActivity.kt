@@ -300,7 +300,7 @@ class MainActivity : Activity() {
                     val parts = row.split("	", limit = 2)
                     val outgoing = parts.firstOrNull() == "OUT"
                     val value = parts.getOrNull(1) ?: row
-                    addMessageBlock(value.replace(Regex("^#\d+\s"), ""), outgoing, false)
+                    addMessageBlock(value.replace(Regex("^#[0-9]+[[:space:]]"), ""), outgoing, false)
                 }
             }
             status.text = "История загружена"
