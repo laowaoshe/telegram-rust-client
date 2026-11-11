@@ -179,7 +179,19 @@ fn check_qr() -> String {
         Ok(tl::enums::auth::LoginToken::Success(_)) => {
             match engine.runtime.block_on(engine.client.is_authorized()) {
                 Ok(true) => ok("QR подтверждён. Вход выполнен."),
-                Ok(false) => err("QR подтверждён, но Telegram ещё не активировал сессию"),
+                Ok(false) => {
+                    let password_result = engine.runtime.block_on(engine.client.invoke(
+                        &tl::functions::account::GetPassword {},
+                    ));
+                    match password_result {
+                        Ok(password) => {
+                            let password: tl::types::account::Password = password.into();
+                            engine.password_token = Some(PasswordToken::new(password));
+                            ok("QR подтверждён. Введи пароль 2FA и нажми «Войти по паролю 2FA».")
+                        }
+                        Err(e) => err(format!("QR подтверждён, но нужен пароль 2FA: {e}")),
+                    }
+                }
                 Err(e) => err(e.to_string()),
             }
         }
