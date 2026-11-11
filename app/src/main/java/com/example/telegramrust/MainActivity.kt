@@ -6,6 +6,8 @@ import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.text.InputType
+import android.text.TextWatcher
+import android.text.Editable
 import android.view.Gravity
 import android.view.View
 import android.widget.Button
@@ -37,6 +39,7 @@ class MainActivity : Activity() {
     private lateinit var contactsScreen: LinearLayout
     private lateinit var settingsScreen: LinearLayout
     private lateinit var dialogs: LinearLayout
+    private var cachedDialogsResult = ""
     private lateinit var messages: LinearLayout
     private lateinit var messageInput: EditText
     private lateinit var chatTitle: TextView
@@ -212,7 +215,15 @@ class MainActivity : Activity() {
             setPadding(dp(16), dp(14), dp(16), dp(16))
         }
         dialogsScreen.addView(text("Диалоги", 22f))
-        dialogsScreen.addView(field("Поиск по чатам"))
+        val dialogSearch = field("⌕  Поиск по чатам")
+        dialogsScreen.addView(dialogSearch)
+        dialogSearch.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                renderDialogs(cachedDialogsResult, s?.toString().orEmpty())
+            }
+            override fun afterTextChanged(s: Editable?) = Unit
+        })
         addGap(dialogsScreen, 8)
         dialogs = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         dialogsScreen.addView(dialogs)
@@ -249,8 +260,30 @@ class MainActivity : Activity() {
             background = glass(surface, 22)
             setPadding(dp(16), dp(14), dp(16), dp(16))
         }
-        contactsScreen.addView(text("Контакты", 22f))
-        contactsScreen.addView(text("Раздел контактов подготовлен для следующего этапа.", 15f, muted))
+        contactsScreen.addView(text("Пользователи", 22f))
+        contactsScreen.addView(text("Найди пользователя по @username", 15f, muted))
+        val usernameField = field("@username")
+        val usernameButton = glassButton("Найти пользователя", purple)
+        val usernameResults = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        contactsScreen.addView(usernameField)
+        addGap(contactsScreen)
+        contactsScreen.addView(usernameButton)
+        addGap(contactsScreen)
+        contactsScreen.addView(usernameResults)
+        usernameButton.setOnClickListener {
+            val query = usernameField.text.toString().trim()
+            if (query.isEmpty()) {
+                status.text = "Введи username пользователя"
+                return@setOnClickListener
+            }
+            status.text = "Ищу пользователя…"
+            runRust({ RustBridge.nativeSearchUsername(query) }) { result ->
+                usernameResults.removeAllViews()
+                val resultCard = glassButton("◉  $result", surfaceSoft)
+                usernameResults.addView(resultCard)
+                status.text = if (result.startsWith("Ошибка:")) result else "Пользователь найден"
+            }
+        }
 
         settingsScreen = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -361,10 +394,25 @@ class MainActivity : Activity() {
     }
 
     private fun showDialogs(result: String) {
+        cachedDialogsResult = result
+        renderDialogs(result, "")
+    }
+
+    private fun renderDialogs(result: String, query: String) {
         dialogs.removeAllViews()
         if (result.startsWith("Ошибка:")) { status.text = result; return }
         val rows = result.lines().filter { it.contains("|") }
-        if (rows.isEmpty()) { status.text = result; return }
+            .filter { query.isBlank() || it.substringAfter("|").contains(query.trim(), ignoreCase = true) }
+        if (rows.isEmpty()) {
+            val empty = TextView(this).apply {
+                text = if (query.isBlank()) "Диалогов пока нет" else "Ничего не найдено"
+                textSize = 15f
+                setTextColor(muted)
+                setPadding(dp(8), dp(16), dp(8), dp(16))
+            }
+            dialogs.addView(empty)
+            return
+        }
         rows.forEach { row ->
             val parts = row.split("|", limit = 2)
             val index = parts[0].toIntOrNull() ?: return@forEach

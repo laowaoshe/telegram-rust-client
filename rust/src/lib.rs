@@ -271,6 +271,27 @@ fn submit_password(password: String) -> String {
     }
 }
 
+
+fn search_username(query: String) -> String {
+    let username = query.trim().trim_start_matches('@').to_string();
+    if username.is_empty() {
+        return err("введи username пользователя");
+    }
+    let mut slot = match engine_slot().lock() {
+        Ok(value) => value,
+        Err(_) => return err("внутреннее состояние Rust повреждено"),
+    };
+    let engine = match slot.as_mut() {
+        Some(value) => value,
+        None => return err("сначала подключись к Telegram"),
+    };
+    match engine.runtime.block_on(engine.client.resolve_username(&username)) {
+        Ok(Some(peer)) => ok(peer.name().unwrap_or("Без имени").to_string()),
+        Ok(None) => err("пользователь не найден"),
+        Err(e) => err(e.to_string()),
+    }
+}
+
 fn dialogs() -> String {
     let mut slot = match engine_slot().lock() {
         Ok(value) => value,
@@ -466,6 +487,20 @@ pub extern "system" fn Java_com_example_telegramrust_RustBridge_nativeSubmitPass
 ) -> jstring {
     let value = match take_string(&mut env, password) {
         Ok(password) => submit_password(password),
+        Err(e) => err(e),
+    };
+    jstring(&mut env, value)
+}
+
+
+#[no_mangle]
+pub extern "system" fn Java_com_example_telegramrust_RustBridge_nativeSearchUsername(
+    mut env: JNIEnv,
+    _class: JClass,
+    query: JString,
+) -> jstring {
+    let value = match take_string(&mut env, query) {
+        Ok(query) => search_username(query),
         Err(e) => err(e),
     };
     jstring(&mut env, value)
