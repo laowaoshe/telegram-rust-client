@@ -9,13 +9,16 @@ import android.text.InputType
 import android.text.TextWatcher
 import android.text.Editable
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.widget.Button
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.view.animation.DecelerateInterpolator
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.MultiFormatWriter
 import java.io.File
@@ -48,10 +51,12 @@ class MainActivity : Activity() {
     private var selectedDialog = -1
 
     private val black = Color.BLACK
-    private val surface = Color.rgb(15, 15, 22)
-    private val surfaceSoft = Color.rgb(24, 21, 38)
-    private val purple = Color.rgb(79, 70, 229)
-    private val purpleDark = Color.rgb(33, 26, 69)
+    // Полупрозрачные поверхности оставляют живой фон видимым сквозь «стекло».
+    // В отличие от старой темы здесь намеренно нет светлых обводок.
+    private val surface = Color.argb(178, 18, 18, 30)
+    private val surfaceSoft = Color.argb(158, 30, 25, 54)
+    private val purple = Color.argb(232, 88, 73, 246)
+    private val purpleDark = Color.argb(142, 55, 42, 112)
     private val white = Color.rgb(245, 243, 255)
     private val muted = Color.rgb(139, 139, 152)
     private val outline = Color.rgb(48, 44, 72)
@@ -61,7 +66,8 @@ class MainActivity : Activity() {
     private fun glass(fill: Int = surface, radius: Int = 18): GradientDrawable = GradientDrawable().apply {
         cornerRadius = dp(radius).toFloat()
         setColor(fill)
-        setStroke(dp(1), outline)
+        // Без setStroke: именно эта контрастная линия давала неприятную рамку.
+        setDither(true)
     }
 
     private fun glassButton(label: String, fill: Int = surfaceSoft): Button = Button(this).apply {
@@ -73,6 +79,26 @@ class MainActivity : Activity() {
         stateListAnimator = null
         background = glass(fill, 16)
         setPadding(dp(16), dp(4), dp(16), dp(4))
+        elevation = dp(1).toFloat()
+
+        // Небольшая пружинистая реакция на касание вместо резкого изменения цвета.
+        setOnTouchListener { view, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    view.animate().scaleX(0.985f).scaleY(0.985f)
+                        .setDuration(90)
+                        .setInterpolator(DecelerateInterpolator())
+                        .start()
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    view.animate().scaleX(1f).scaleY(1f)
+                        .setDuration(180)
+                        .setInterpolator(DecelerateInterpolator())
+                        .start()
+                }
+            }
+            false
+        }
     }
 
     private fun addGap(parent: LinearLayout, height: Int = 8) {
@@ -88,11 +114,12 @@ class MainActivity : Activity() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.TOP
-            setBackgroundColor(black)
+            setBackgroundColor(Color.TRANSPARENT)
             setPadding(padding, padding, padding, padding)
         }
         scroll = ScrollView(this).apply {
-            setBackgroundColor(black)
+            setBackgroundColor(Color.TRANSPARENT)
+            clipToPadding = false
             addView(root)
         }
 
@@ -306,10 +333,25 @@ class MainActivity : Activity() {
         val sessionPath = File(filesDir, "telegram.session").absolutePath
 
         fun showScreen(screen: View) {
-            dialogsScreen.visibility = if (screen === dialogsScreen) View.VISIBLE else View.GONE
-            chatScreen.visibility = if (screen === chatScreen) View.VISIBLE else View.GONE
-            contactsScreen.visibility = if (screen === contactsScreen) View.VISIBLE else View.GONE
-            settingsScreen.visibility = if (screen === settingsScreen) View.VISIBLE else View.GONE
+            val screens = listOf(dialogsScreen, chatScreen, contactsScreen, settingsScreen)
+            screens.forEach { candidate ->
+                if (candidate !== screen) {
+                    candidate.animate().cancel()
+                    candidate.visibility = View.GONE
+                    candidate.alpha = 1f
+                    candidate.translationY = 0f
+                }
+            }
+            screen.animate().cancel()
+            screen.visibility = View.VISIBLE
+            screen.alpha = 0f
+            screen.translationY = dp(14).toFloat()
+            screen.animate()
+                .alpha(1f)
+                .translationY(0f)
+                .setDuration(280)
+                .setInterpolator(DecelerateInterpolator())
+                .start()
         }
 
         fun openChats() {
@@ -390,7 +432,25 @@ class MainActivity : Activity() {
             }
         }
 
-        setContentView(scroll)
+        // Анимированный фон находится под ScrollView, поэтому цветные «световые
+        // пятна» медленно двигаются и просматриваются через полупрозрачные панели.
+        val backdrop = AnimatedBackdropView(this)
+        val content = FrameLayout(this).apply {
+            setBackgroundColor(black)
+            addView(backdrop, FrameLayout.LayoutParams(-1, -1))
+            addView(scroll, FrameLayout.LayoutParams(-1, -1))
+        }
+        setContentView(content)
+        authPanel.alpha = 0f
+        authPanel.translationY = dp(10).toFloat()
+        authPanel.post {
+            authPanel.animate()
+                .alpha(1f)
+                .translationY(0f)
+                .setDuration(420)
+                .setInterpolator(DecelerateInterpolator())
+                .start()
+        }
     }
 
     private fun showDialogs(result: String) {
@@ -413,9 +473,9 @@ class MainActivity : Activity() {
             dialogs.addView(empty)
             return
         }
-        rows.forEach { row ->
+        rows.forEachIndexed { rowIndex, row ->
             val parts = row.split("|", limit = 2)
-            val index = parts[0].toIntOrNull() ?: return@forEach
+            val index = parts[0].toIntOrNull() ?: return@forEachIndexed
             val title = parts.getOrNull(1)?.ifBlank { "Без названия" } ?: "Без названия"
             val item = glassButton("◉  $title", surfaceSoft)
             item.gravity = Gravity.START
@@ -432,6 +492,15 @@ class MainActivity : Activity() {
             val params = LinearLayout.LayoutParams(-1, -2)
             params.setMargins(0, dp(5), 0, dp(5))
             dialogs.addView(item, params)
+            item.alpha = 0f
+            item.translationY = dp(8).toFloat()
+            item.animate()
+                .alpha(1f)
+                .translationY(0f)
+                .setStartDelay((rowIndex * 28L).coerceAtMost(180L))
+                .setDuration(240)
+                .setInterpolator(DecelerateInterpolator())
+                .start()
         }
     }
 
