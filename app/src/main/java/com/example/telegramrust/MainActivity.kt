@@ -1,8 +1,9 @@
 package com.example.telegramrust
 
 import android.app.Activity
-import android.graphics.Color
 import android.graphics.Bitmap
+import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.text.InputType
 import android.view.Gravity
@@ -11,6 +12,7 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.MultiFormatWriter
@@ -23,10 +25,14 @@ class MainActivity : Activity() {
     private lateinit var phone: EditText
     private lateinit var code: EditText
     private lateinit var password: EditText
+    private lateinit var authPanel: LinearLayout
+    private lateinit var chatPanel: LinearLayout
     private lateinit var dialogs: LinearLayout
-    private lateinit var messages: TextView
+    private lateinit var messages: LinearLayout
     private lateinit var messageInput: EditText
+    private lateinit var chatTitle: TextView
     private lateinit var qrImage: ImageView
+    private lateinit var scroll: ScrollView
     private var selectedDialog = -1
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -38,9 +44,7 @@ class MainActivity : Activity() {
             setPadding(padding, padding, padding, padding)
             gravity = Gravity.TOP
         }
-        val scroll = android.widget.ScrollView(this).apply {
-            addView(root)
-        }
+        scroll = ScrollView(this).apply { addView(root) }
 
         fun text(value: String, size: Float): TextView = TextView(this).apply {
             text = value
@@ -55,54 +59,81 @@ class MainActivity : Activity() {
         }
 
         root.addView(text("Telegram Rust Client", 24f))
-        root.addView(text("Подключение к Telegram через Rust MTProto", 16f))
-        root.addView(text("API ID и API hash бери только на my.telegram.org. Не отправляй их в чат.", 13f))
+        status = text("Готово к подключению", 16f)
+        root.addView(status)
+
+        authPanel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        authPanel.addView(text("Подключение через Rust MTProto", 16f))
+        authPanel.addView(text("API ID и API hash бери только на my.telegram.org. Не отправляй их в чат.", 13f))
 
         apiId = field("API ID", InputType.TYPE_CLASS_NUMBER)
         apiHash = field("API hash")
         phone = field("Номер телефона, например +380...", InputType.TYPE_CLASS_PHONE)
         code = field("Код из Telegram или SMS", InputType.TYPE_CLASS_NUMBER)
-        password = field("Пароль двухэтапной проверки Telegram", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD)
+        password = field(
+            "Пароль двухэтапной проверки Telegram",
+            InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD,
+        )
 
         val requestButton = Button(this).apply { text = "Получить код Telegram" }
         val qrButton = Button(this).apply { text = "Показать QR-код" }
         val qrCheckButton = Button(this).apply { text = "Проверить QR-вход" }
         val codeButton = Button(this).apply { text = "Войти по коду" }
         val passwordButton = Button(this).apply { text = "Войти по паролю 2FA" }
-        val dialogsButton = Button(this).apply { text = "Показать диалоги" }
-        val chatTitle = text("История диалога", 18f)
-        dialogs = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-        }
-        messages = text("Выбери диалог выше", 15f)
-        messages.setTextIsSelectable(true)
-        messageInput = field("Сообщение")
-        val sendButton = Button(this).apply { text = "Отправить" }
+        val dialogsButton = Button(this).apply { text = "Открыть диалоги" }
+
         qrImage = ImageView(this).apply {
             adjustViewBounds = true
             setPadding(12, 12, 12, 12)
             visibility = View.GONE
         }
-        status = text("Готово к подключению", 16f)
 
-        root.addView(apiId)
-        root.addView(apiHash)
-        root.addView(phone)
-        root.addView(requestButton)
-        root.addView(qrButton)
-        root.addView(qrCheckButton)
-        root.addView(code)
-        root.addView(codeButton)
-        root.addView(password)
-        root.addView(passwordButton)
-        root.addView(dialogsButton)
-        root.addView(status)
-        root.addView(dialogs)
-        root.addView(chatTitle)
-        root.addView(messages)
-        root.addView(messageInput)
-        root.addView(sendButton)
-        root.addView(qrImage)
+        authPanel.addView(apiId)
+        authPanel.addView(apiHash)
+        authPanel.addView(phone)
+        authPanel.addView(requestButton)
+        authPanel.addView(qrButton)
+        authPanel.addView(qrCheckButton)
+        authPanel.addView(code)
+        authPanel.addView(codeButton)
+        authPanel.addView(password)
+        authPanel.addView(passwordButton)
+        authPanel.addView(dialogsButton)
+        authPanel.addView(qrImage)
+        root.addView(authPanel)
+
+        chatPanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+        }
+        val chatToolbar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val backButton = Button(this).apply { text = "← Диалоги" }
+        val refreshButton = Button(this).apply { text = "Обновить" }
+        chatTitle = text("Чаты", 20f)
+        chatToolbar.addView(backButton, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        chatToolbar.addView(refreshButton)
+        chatPanel.addView(chatToolbar)
+        chatPanel.addView(chatTitle)
+
+        dialogs = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        chatPanel.addView(text("Диалоги", 18f))
+        chatPanel.addView(dialogs)
+
+        messages = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, 8, 0, 8)
+        }
+        chatPanel.addView(text("Сообщения", 18f))
+        chatPanel.addView(messages)
+
+        messageInput = field("Сообщение")
+        val sendButton = Button(this).apply { text = "Отправить" }
+        chatPanel.addView(messageInput)
+        chatPanel.addView(sendButton)
+        root.addView(chatPanel)
 
         val sessionPath = File(filesDir, "telegram.session").absolutePath
 
@@ -131,7 +162,7 @@ class MainActivity : Activity() {
                     try {
                         qrImage.setImageBitmap(makeQrBitmap(result))
                         qrImage.visibility = View.VISIBLE
-                        status.text = "Открой Telegram на другом устройстве: Настройки → Устройства → Сканировать QR-код. Наведи камеру на этот QR-код, затем нажми «Проверить QR-вход»."
+                        status.text = "Отсканируй QR в Telegram, затем нажми «Проверить QR-вход»."
                     } catch (_: Exception) {
                         status.text = "Не удалось создать QR-код"
                     }
@@ -168,11 +199,17 @@ class MainActivity : Activity() {
 
         dialogsButton.setOnClickListener {
             status.text = "Загружаю диалоги…"
-            runRust({ RustBridge.nativeDialogs() }, { result ->
-                showDialogs(result)
-            })
+            runRust({ RustBridge.nativeDialogs() }) { result -> showChat(result) }
         }
-
+        refreshButton.setOnClickListener {
+            status.text = "Обновляю диалоги…"
+            runRust({ RustBridge.nativeDialogs() }) { result -> showDialogs(result) }
+        }
+        backButton.setOnClickListener {
+            chatPanel.visibility = View.GONE
+            authPanel.visibility = View.VISIBLE
+            status.text = "Возврат к подключению"
+        }
         sendButton.setOnClickListener {
             if (selectedDialog < 0) {
                 status.text = "Сначала выбери диалог"
@@ -196,6 +233,17 @@ class MainActivity : Activity() {
         setContentView(scroll)
     }
 
+    private fun showChat(result: String) {
+        if (result.startsWith("Ошибка:")) {
+            status.text = result
+            return
+        }
+        showDialogs(result)
+        authPanel.visibility = View.GONE
+        chatPanel.visibility = View.VISIBLE
+        status.text = "Диалоги загружены. Выбери чат."
+    }
+
     private fun showDialogs(result: String) {
         dialogs.removeAllViews()
         if (result.startsWith("Ошибка:")) {
@@ -215,20 +263,53 @@ class MainActivity : Activity() {
                 text = title
                 setOnClickListener {
                     selectedDialog = index
+                    chatTitle.text = title
                     status.text = "Загружаю историю…"
                     loadMessages(index)
                 }
             }
             dialogs.addView(button)
         }
-        status.text = "Диалоги загружены. Выбери один."
     }
 
     private fun loadMessages(index: Int) {
         runRust({ RustBridge.nativeMessages(index) }) { result ->
-            messages.text = result
-            status.text = if (result.startsWith("Ошибка:")) result else "История загружена"
+            messages.removeAllViews()
+            if (result.startsWith("Ошибка:")) {
+                addMessageBlock(result, true)
+                status.text = result
+                return@runRust
+            }
+            val rows = result.lines().filter { it.isNotBlank() }
+            if (rows.isEmpty()) {
+                addMessageBlock("Сообщений пока нет", false)
+            } else {
+                rows.forEach { row ->
+                    addMessageBlock(row.replace(Regex("^#\\d+\\s"), ""), false)
+                }
+            }
+            status.text = "История загружена"
+            scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
         }
+    }
+
+    private fun addMessageBlock(value: String, isError: Boolean) {
+        val block = TextView(this).apply {
+            text = value
+            textSize = 16f
+            setTextColor(if (isError) Color.rgb(150, 0, 0) else Color.DKGRAY)
+            setPadding(18, 12, 18, 12)
+            background = GradientDrawable().apply {
+                cornerRadius = 18f
+                setColor(if (isError) Color.rgb(255, 235, 235) else Color.rgb(238, 242, 247))
+            }
+        }
+        val params = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+        )
+        params.setMargins(0, 4, 0, 4)
+        messages.addView(block, params)
     }
 
     private fun makeQrBitmap(value: String): Bitmap {
