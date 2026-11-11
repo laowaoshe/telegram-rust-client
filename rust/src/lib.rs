@@ -335,7 +335,8 @@ fn messages(index: usize) -> String {
         while let Some(message) = iterator.next().await.map_err(|e| e.to_string())? {
             let text = message.text().trim();
             if !text.is_empty() {
-                lines.push(format!("#{} {}", message.id(), text));
+                let direction = if message.outgoing() { "OUT" } else { "IN" };
+                lines.push(format!("{}\t#{} {}", direction, message.id(), text));
             }
         }
         lines.reverse();

@@ -288,16 +288,19 @@ class MainActivity : Activity() {
         runRust({ RustBridge.nativeMessages(index) }) { result ->
             messages.removeAllViews()
             if (result.startsWith("Ошибка:")) {
-                addMessageBlock(result, true)
+                addMessageBlock(result, outgoing = false, isError = true)
                 status.text = result
                 return@runRust
             }
             val rows = result.lines().filter { it.isNotBlank() }
             if (rows.isEmpty()) {
-                addMessageBlock("Сообщений пока нет", false)
+                addMessageBlock("Сообщений пока нет", outgoing = false, isError = false)
             } else {
                 rows.forEach { row ->
-                    addMessageBlock(row.replace(Regex("^#\\d+\\s"), ""), false)
+                    val parts = row.split("	", limit = 2)
+                    val outgoing = parts.firstOrNull() == "OUT"
+                    val value = parts.getOrNull(1) ?: row
+                    addMessageBlock(value.replace(Regex("^#\d+\s"), ""), outgoing, false)
                 }
             }
             status.text = "История загружена"
@@ -305,22 +308,32 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun addMessageBlock(value: String, isError: Boolean) {
+    private fun addMessageBlock(value: String, outgoing: Boolean, isError: Boolean) {
         val block = TextView(this).apply {
             text = value
             textSize = 16f
-            setTextColor(if (isError) Color.rgb(150, 0, 0) else Color.DKGRAY)
-            setPadding(18, 12, 18, 12)
+            maxWidth = (resources.displayMetrics.widthPixels * 0.82f).toInt()
+            setTextColor(Color.WHITE)
+            setPadding(20, 13, 20, 13)
             background = GradientDrawable().apply {
                 cornerRadius = 18f
-                setColor(if (isError) Color.rgb(255, 235, 235) else Color.rgb(238, 242, 247))
+                val fill = when {
+                    isError -> Color.rgb(62, 20, 30)
+                    outgoing -> Color.rgb(79, 70, 229)
+                    else -> Color.rgb(17, 17, 22)
+                }
+                setColor(fill)
+                if (!outgoing && !isError) {
+                    setStroke(1, Color.rgb(45, 42, 64))
+                }
             }
         }
         val params = LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT,
             LinearLayout.LayoutParams.WRAP_CONTENT,
         )
-        params.setMargins(0, 4, 0, 4)
+        params.gravity = if (outgoing) Gravity.END else Gravity.START
+        params.setMargins(0, 5, 0, 5)
         messages.addView(block, params)
     }
 
