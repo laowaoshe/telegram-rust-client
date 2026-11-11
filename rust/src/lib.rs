@@ -288,10 +288,10 @@ fn dialogs() -> String {
     }
 }
 
-fn with_dialog<F, Fut>(engine: &mut Engine, index: usize, action: F) -> Result<String, String>
+fn with_dialog<F, Fut, T>(engine: &mut Engine, index: usize, action: F) -> Result<T, String>
 where
     F: FnOnce(grammers_session::types::PeerRef, Client) -> Fut,
-    Fut: std::future::Future<Output = Result<String, String>>,
+    Fut: std::future::Future<Output = Result<T, String>>,
 {
     engine.runtime.block_on(async {
         let mut dialogs = engine.client.iter_dialogs();
