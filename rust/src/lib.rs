@@ -201,19 +201,6 @@ fn check_qr() -> String {
         Ok(tl::enums::auth::LoginToken::MigrateTo(_)) => {
             err("Telegram попросил другой сервер. Создай новый QR.")
         }
-        Err(e) if e.is("SESSION_PASSWORD_NEEDED") => {
-            let password_result = engine.runtime.block_on(engine.client.invoke(
-                &tl::functions::account::GetPassword {},
-            ));
-            match password_result {
-                Ok(password) => {
-                    let password: tl::types::account::Password = password.into();
-                    engine.password_token = Some(PasswordToken::new(password));
-                    ok("QR подтверждён. Введи пароль 2FA и нажми «Войти по паролю 2FA».")
-                }
-                Err(password_error) => err(format!("Не удалось получить данные 2FA: {password_error}")),
-            }
-        }
         Err(e) => err(e.to_string()),
     }
 }
@@ -286,7 +273,7 @@ fn dialogs() -> String {
         let mut lines = Vec::new();
         while let Some(dialog) = dialogs.next().await.map_err(|e| e.to_string())? {
             let peer = dialog.peer();
-            lines.push(format!("• {}", peer.name().unwrap_or("Без названия")));
+            lines.push(format!("{}|{}", lines.len(), peer.name().unwrap_or("Без названия")));
             if lines.len() >= 30 {
                 break;
             }
@@ -297,6 +284,83 @@ fn dialogs() -> String {
     match result {
         Ok(lines) if lines.is_empty() => ok("Диалогов пока не найдено."),
         Ok(lines) => lines.join("\n"),
+        Err(e) => err(e),
+    }
+}
+
+fn with_dialog<F, Fut>(engine: &mut Engine, index: usize, action: F) -> Result<String, String>
+where
+    F: FnOnce(grammers_session::types::PeerRef, Client) -> Fut,
+    Fut: std::future::Future<Output = Result<String, String>>,
+{
+    engine.runtime.block_on(async {
+        let mut dialogs = engine.client.iter_dialogs();
+        let mut current = 0usize;
+        while let Some(dialog) = dialogs.next().await.map_err(|e| e.to_string())? {
+            if current == index {
+                return action(dialog.peer_ref(), engine.client.clone()).await;
+            }
+            current += 1;
+        }
+        Err(format!("диалог с номером {} не найден", index + 1))
+    })
+}
+
+fn messages(index: usize) -> String {
+    let mut slot = match engine_slot().lock() {
+        Ok(value) => value,
+        Err(_) => return err("внутреннее состояние Rust повреждено"),
+    };
+    let engine = match slot.as_mut() {
+        Some(value) => value,
+        None => return err("сначала подключись к Telegram"),
+    };
+
+    let result = with_dialog(engine, index, |peer, client| async move {
+        let mut iterator = client.iter_messages(peer).limit(30);
+        let mut lines = Vec::new();
+        while let Some(message) = iterator.next().await.map_err(|e| e.to_string())? {
+            let text = message.text().trim();
+            if !text.is_empty() {
+                lines.push(format!("#{} {}", message.id(), text));
+            }
+        }
+        lines.reverse();
+        Ok::<_, String>(lines)
+    });
+
+    match result {
+        Ok(lines) if lines.is_empty() => ok("В этом диалоге пока нет текстовых сообщений."),
+        Ok(lines) => lines.join("\n"),
+        Err(e) => err(e),
+    }
+}
+
+fn send_message(index: usize, text: String) -> String {
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        return err("сообщение пустое");
+    }
+
+    let mut slot = match engine_slot().lock() {
+        Ok(value) => value,
+        Err(_) => return err("внутреннее состояние Rust повреждено"),
+    };
+    let engine = match slot.as_mut() {
+        Some(value) => value,
+        None => return err("сначала подключись к Telegram"),
+    };
+
+    let result = with_dialog(engine, index, |peer, client| async move {
+        client
+            .send_message(peer, text)
+            .await
+            .map(|_| "Сообщение отправлено.".to_string())
+            .map_err(|e| e.to_string())
+    });
+
+    match result {
+        Ok(value) => ok(value),
         Err(e) => err(e),
     }
 }
@@ -402,4 +466,33 @@ pub extern "system" fn Java_com_example_telegramrust_RustBridge_nativeDialogs(
     _class: JClass,
 ) -> jstring {
     jstring(&mut env, dialogs())
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_example_telegramrust_RustBridge_nativeMessages(
+    mut env: JNIEnv,
+    _class: JClass,
+    index: jint,
+) -> jstring {
+    let value = if index < 0 {
+        err("неверный номер диалога")
+    } else {
+        messages(index as usize)
+    };
+    jstring(&mut env, value)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_example_telegramrust_RustBridge_nativeSendMessage(
+    mut env: JNIEnv,
+    _class: JClass,
+    index: jint,
+    text: JString,
+) -> jstring {
+    let value = match take_string(&mut env, text) {
+        Ok(text) if index >= 0 => send_message(index as usize, text),
+        Ok(_) => err("неверный номер диалога"),
+        Err(e) => err(e),
+    };
+    jstring(&mut env, value)
 }

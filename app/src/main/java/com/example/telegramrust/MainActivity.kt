@@ -23,8 +23,11 @@ class MainActivity : Activity() {
     private lateinit var phone: EditText
     private lateinit var code: EditText
     private lateinit var password: EditText
-    private lateinit var dialogs: TextView
+    private lateinit var dialogs: LinearLayout
+    private lateinit var messages: TextView
+    private lateinit var messageInput: EditText
     private lateinit var qrImage: ImageView
+    private var selectedDialog = -1
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -34,6 +37,9 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             setPadding(padding, padding, padding, padding)
             gravity = Gravity.TOP
+        }
+        val scroll = android.widget.ScrollView(this).apply {
+            addView(root)
         }
 
         fun text(value: String, size: Float): TextView = TextView(this).apply {
@@ -64,13 +70,20 @@ class MainActivity : Activity() {
         val codeButton = Button(this).apply { text = "Войти по коду" }
         val passwordButton = Button(this).apply { text = "Войти по паролю 2FA" }
         val dialogsButton = Button(this).apply { text = "Показать диалоги" }
+        val chatTitle = text("История диалога", 18f)
+        dialogs = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        messages = text("Выбери диалог выше", 15f)
+        messages.setTextIsSelectable(true)
+        messageInput = field("Сообщение")
+        val sendButton = Button(this).apply { text = "Отправить" }
         qrImage = ImageView(this).apply {
             adjustViewBounds = true
             setPadding(12, 12, 12, 12)
             visibility = View.GONE
         }
         status = text("Готово к подключению", 16f)
-        dialogs = text("", 15f)
 
         root.addView(apiId)
         root.addView(apiHash)
@@ -85,6 +98,10 @@ class MainActivity : Activity() {
         root.addView(dialogsButton)
         root.addView(status)
         root.addView(dialogs)
+        root.addView(chatTitle)
+        root.addView(messages)
+        root.addView(messageInput)
+        root.addView(sendButton)
         root.addView(qrImage)
 
         val sessionPath = File(filesDir, "telegram.session").absolutePath
@@ -114,7 +131,7 @@ class MainActivity : Activity() {
                     try {
                         qrImage.setImageBitmap(makeQrBitmap(result))
                         qrImage.visibility = View.VISIBLE
-                        status.text = "Открой Telegram на другом устройстве: Настройки → Устройства → Сканировать QR-код. Наведи камеру на QR-код, затем нажми «Проверить QR-вход»."
+                        status.text = "Открой Telegram на другом устройстве: Настройки → Устройства → Сканировать QR-код. Наведи камеру на этот QR-код, затем нажми «Проверить QR-вход»."
                     } catch (_: Exception) {
                         status.text = "Не удалось создать QR-код"
                     }
@@ -152,12 +169,66 @@ class MainActivity : Activity() {
         dialogsButton.setOnClickListener {
             status.text = "Загружаю диалоги…"
             runRust({ RustBridge.nativeDialogs() }, { result ->
-                dialogs.text = result
-                status.text = "Диалоги загружены"
+                showDialogs(result)
             })
         }
 
-        setContentView(root)
+        sendButton.setOnClickListener {
+            if (selectedDialog < 0) {
+                status.text = "Сначала выбери диалог"
+                return@setOnClickListener
+            }
+            val value = messageInput.text.toString().trim()
+            if (value.isEmpty()) {
+                status.text = "Введи сообщение"
+                return@setOnClickListener
+            }
+            status.text = "Отправляю…"
+            runRust({ RustBridge.nativeSendMessage(selectedDialog, value) }) { result ->
+                status.text = result
+                if (!result.startsWith("Ошибка:")) {
+                    messageInput.text.clear()
+                    loadMessages(selectedDialog)
+                }
+            }
+        }
+
+        setContentView(scroll)
+    }
+
+    private fun showDialogs(result: String) {
+        dialogs.removeAllViews()
+        if (result.startsWith("Ошибка:")) {
+            status.text = result
+            return
+        }
+        val rows = result.lines().filter { it.contains("|") }
+        if (rows.isEmpty()) {
+            status.text = result
+            return
+        }
+        rows.forEach { row ->
+            val parts = row.split("|", limit = 2)
+            val index = parts[0].toIntOrNull() ?: return@forEach
+            val title = parts.getOrNull(1)?.ifBlank { "Без названия" } ?: "Без названия"
+            val button = Button(this).apply {
+                text = title
+                setOnClickListener {
+                    selectedDialog = index
+                    status.text = "Загружаю историю…"
+                    loadMessages(index)
+                }
+            }
+            dialogs.addView(button)
+        }
+        status.text = "Диалоги загружены. Выбери один."
+    }
+
+    private fun loadMessages(index: Int) {
+        runRust({ RustBridge.nativeMessages(index) }) { result ->
+            messages.text = result
+            status.text = if (result.startsWith("Ошибка:")) result else "История загружена"
+        }
     }
 
     private fun makeQrBitmap(value: String): Bitmap {

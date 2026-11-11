@@ -12,4 +12,6 @@ object RustBridge {
     external fun nativeSubmitCode(code: String): String
     external fun nativeSubmitPassword(password: String): String
     external fun nativeDialogs(): String
+    external fun nativeMessages(index: Int): String
+    external fun nativeSendMessage(index: Int, text: String): String
 }
