@@ -1,7 +1,9 @@
 use std::sync::{Arc, Mutex, OnceLock};
 
-use grammers_client::{Client, SignInError};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as Base64Engine};
 use grammers_client::client::{LoginToken, PasswordToken};
+use grammers_client::tl;
+use grammers_client::{Client, SignInError};
 use grammers_mtsender::SenderPool;
 use grammers_session::storages::SqliteSession;
 use jni::objects::{JClass, JString};
@@ -10,6 +12,8 @@ use jni::JNIEnv;
 use tokio::runtime::{Builder, Runtime};
 
 struct Engine {
+    api_id: i32,
+    api_hash: String,
     runtime: Runtime,
     client: Client,
     login_token: Option<LoginToken>,
@@ -37,15 +41,10 @@ fn make_runtime() -> Result<Runtime, String> {
         .map_err(|e| e.to_string())
 }
 
-fn start_login(api_id: i32, api_hash: String, phone: String, session_path: String) -> String {
-    let runtime = match make_runtime() {
-        Ok(value) => value,
-        Err(e) => return err(format!("не удалось запустить Rust runtime: {e}")),
-    };
-
-    let result = runtime.block_on(async {
+fn create_client(runtime: &Runtime, api_id: i32, session_path: &str) -> Result<Client, String> {
+    runtime.block_on(async {
         let session = Arc::new(
-            SqliteSession::open(&session_path)
+            SqliteSession::open(session_path)
                 .await
                 .map_err(|e| e.to_string())?,
         );
@@ -53,16 +52,42 @@ fn start_login(api_id: i32, api_hash: String, phone: String, session_path: Strin
             SenderPool::new(Arc::clone(&session), api_id);
         let client = Client::new(handle);
         tokio::spawn(runner.run());
+        Ok::<_, String>(client)
+    })
+}
 
+fn new_engine(api_id: i32, api_hash: String, session_path: String) -> Result<Engine, String> {
+    let runtime = make_runtime()?;
+    let client = create_client(&runtime, api_id, &session_path)?;
+    Ok(Engine {
+        api_id,
+        api_hash,
+        runtime,
+        client,
+        login_token: None,
+        password_token: None,
+    })
+}
+
+fn start_login(api_id: i32, api_hash: String, phone: String, session_path: String) -> String {
+    let runtime = match make_runtime() {
+        Ok(value) => value,
+        Err(e) => return err(format!("не удалось запустить Rust runtime: {e}")),
+    };
+    let client = match create_client(&runtime, api_id, &session_path) {
+        Ok(value) => value,
+        Err(e) => return err(e),
+    };
+
+    let result = runtime.block_on(async {
         if client.is_authorized().await.map_err(|e| e.to_string())? {
-            return Ok::<_, String>((client, None));
+            return Ok::<_, String>((client.clone(), None));
         }
-
         let token = client
             .request_login_code(&phone, &api_hash)
             .await
             .map_err(|e| e.to_string())?;
-        Ok((client, Some(token)))
+        Ok((client.clone(), Some(token)))
     });
 
     match result {
@@ -72,6 +97,8 @@ fn start_login(api_id: i32, api_hash: String, phone: String, session_path: Strin
                 Err(_) => return err("внутреннее состояние Rust повреждено"),
             };
             *slot = Some(Engine {
+                api_id,
+                api_hash,
                 runtime,
                 client,
                 login_token: token,
@@ -84,6 +111,85 @@ fn start_login(api_id: i32, api_hash: String, phone: String, session_path: Strin
             }
         }
         Err(e) => err(e),
+    }
+}
+
+fn export_qr_link(engine: &mut Engine) -> String {
+    let result = engine.runtime.block_on(engine.client.invoke(
+        &tl::functions::auth::ExportLoginToken {
+            api_id: engine.api_id,
+            api_hash: engine.api_hash.clone(),
+            except_ids: Vec::new(),
+        },
+    ));
+
+    match result {
+        Ok(tl::enums::auth::LoginToken::Token(token)) => {
+            let encoded = URL_SAFE_NO_PAD.encode(token.token);
+            format!("tg://login?token={encoded}")
+        }
+        Ok(tl::enums::auth::LoginToken::MigrateTo(_)) => {
+            err("Telegram попросил другой сервер. Повтори QR-вход ещё раз.")
+        }
+        Ok(tl::enums::auth::LoginToken::Success(_)) => {
+            ok("QR уже подтверждён. Нажми «Проверить QR».")
+        }
+        Err(e) => err(e.to_string()),
+    }
+}
+
+fn request_qr(api_id: i32, api_hash: String, session_path: String) -> String {
+    let mut slot = match engine_slot().lock() {
+        Ok(value) => value,
+        Err(_) => return err("внутреннее состояние Rust повреждено"),
+    };
+
+    if slot.is_none() {
+        *slot = match new_engine(api_id, api_hash, session_path) {
+            Ok(value) => Some(value),
+            Err(e) => return err(e),
+        };
+    }
+
+    match slot.as_mut() {
+        Some(engine) => export_qr_link(engine),
+        None => err("не удалось создать Telegram-сессию"),
+    }
+}
+
+fn check_qr() -> String {
+    let mut slot = match engine_slot().lock() {
+        Ok(value) => value,
+        Err(_) => return err("внутреннее состояние Rust повреждено"),
+    };
+    let engine = match slot.as_mut() {
+        Some(value) => value,
+        None => return err("сначала нажми «Войти через QR»"),
+    };
+
+    let result = engine.runtime.block_on(engine.client.invoke(
+        &tl::functions::auth::ExportLoginToken {
+            api_id: engine.api_id,
+            api_hash: engine.api_hash.clone(),
+            except_ids: Vec::new(),
+        },
+    ));
+
+    match result {
+        Ok(tl::enums::auth::LoginToken::Success(_)) => {
+            match engine.runtime.block_on(engine.client.is_authorized()) {
+                Ok(true) => ok("QR подтверждён. Вход выполнен."),
+                Ok(false) => err("QR подтверждён, но Telegram ещё не активировал сессию"),
+                Err(e) => err(e.to_string()),
+            }
+        }
+        Ok(tl::enums::auth::LoginToken::Token(_)) => {
+            err("QR ещё не подтверждён. Открой ссылку Telegram и подтверди вход.")
+        }
+        Ok(tl::enums::auth::LoginToken::MigrateTo(_)) => {
+            err("Telegram попросил другой сервер. Создай новый QR.")
+        }
+        Err(e) => err(e.to_string()),
     }
 }
 
@@ -130,10 +236,7 @@ fn submit_password(password: String) -> String {
         None => return err("пароль сейчас не требуется"),
     };
 
-    match engine
-        .runtime
-        .block_on(engine.client.check_password(token, password))
-    {
+    match engine.runtime.block_on(engine.client.check_password(token, password)) {
         Ok(user) => {
             engine.login_token = None;
             ok(format!("Вход выполнен: {}", user.first_name().unwrap_or("пользователь")))
@@ -206,12 +309,40 @@ pub extern "system" fn Java_com_example_telegramrust_RustBridge_nativeRequestCod
         take_string(&mut env, session_path),
     );
     let value = match values {
-        (Ok(api_hash), Ok(phone), Ok(session_path)) if api_id > 0 && !api_hash.is_empty() && !phone.is_empty() => {
+        (Ok(api_hash), Ok(phone), Ok(session_path))
+            if api_id > 0 && !api_hash.is_empty() && !phone.is_empty() =>
+        {
             start_login(api_id, api_hash, phone, session_path)
         }
         _ => err("проверь API ID, API hash и номер телефона"),
     };
     jstring(&mut env, value)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_example_telegramrust_RustBridge_nativeRequestQr(
+    mut env: JNIEnv,
+    _class: JClass,
+    api_id: jint,
+    api_hash: JString,
+    session_path: JString,
+) -> jstring {
+    let values = (take_string(&mut env, api_hash), take_string(&mut env, session_path));
+    let value = match values {
+        (Ok(api_hash), Ok(session_path)) if api_id > 0 && !api_hash.is_empty() => {
+            request_qr(api_id, api_hash, session_path)
+        }
+        _ => err("проверь API ID и API hash"),
+    };
+    jstring(&mut env, value)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_example_telegramrust_RustBridge_nativeCheckQr(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    jstring(&mut env, check_qr())
 }
 
 #[no_mangle]

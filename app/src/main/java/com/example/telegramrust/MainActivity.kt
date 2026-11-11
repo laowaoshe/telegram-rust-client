@@ -1,7 +1,9 @@
 package com.example.telegramrust
 
 import android.app.Activity
+import android.content.Intent
 import android.graphics.Color
+import android.net.Uri
 import android.os.Bundle
 import android.text.InputType
 import android.view.Gravity
@@ -18,10 +20,6 @@ class MainActivity : Activity() {
     private lateinit var phone: EditText
     private lateinit var code: EditText
     private lateinit var password: EditText
-    private lateinit var requestButton: Button
-    private lateinit var codeButton: Button
-    private lateinit var passwordButton: Button
-    private lateinit var dialogsButton: Button
     private lateinit var dialogs: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -56,10 +54,12 @@ class MainActivity : Activity() {
         code = field("Код из Telegram или SMS", InputType.TYPE_CLASS_NUMBER)
         password = field("Пароль двухэтапной проверки Telegram", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD)
 
-        requestButton = Button(this).apply { text = "Получить код Telegram" }
-        codeButton = Button(this).apply { text = "Войти по коду" }
-        passwordButton = Button(this).apply { text = "Войти по паролю 2FA" }
-        dialogsButton = Button(this).apply { text = "Показать диалоги" }
+        val requestButton = Button(this).apply { text = "Получить код Telegram" }
+        val qrButton = Button(this).apply { text = "Войти через Telegram" }
+        val qrCheckButton = Button(this).apply { text = "Проверить QR-вход" }
+        val codeButton = Button(this).apply { text = "Войти по коду" }
+        val passwordButton = Button(this).apply { text = "Войти по паролю 2FA" }
+        val dialogsButton = Button(this).apply { text = "Показать диалоги" }
         status = text("Готово к подключению", 16f)
         dialogs = text("", 15f)
 
@@ -67,6 +67,8 @@ class MainActivity : Activity() {
         root.addView(apiHash)
         root.addView(phone)
         root.addView(requestButton)
+        root.addView(qrButton)
+        root.addView(qrCheckButton)
         root.addView(code)
         root.addView(codeButton)
         root.addView(password)
@@ -74,6 +76,8 @@ class MainActivity : Activity() {
         root.addView(dialogsButton)
         root.addView(status)
         root.addView(dialogs)
+
+        val sessionPath = File(filesDir, "telegram.session").absolutePath
 
         requestButton.setOnClickListener {
             val id = apiId.text.toString().toIntOrNull()
@@ -84,7 +88,34 @@ class MainActivity : Activity() {
                 return@setOnClickListener
             }
             status.text = "Запрашиваю код…"
-            runRust({ RustBridge.nativeRequestCode(id, hash, phoneValue, File(filesDir, "telegram.session").absolutePath) })
+            runRust({ RustBridge.nativeRequestCode(id, hash, phoneValue, sessionPath) })
+        }
+
+        qrButton.setOnClickListener {
+            val id = apiId.text.toString().toIntOrNull()
+            val hash = apiHash.text.toString().trim()
+            if (id == null || hash.isEmpty()) {
+                status.text = "Заполни API ID и API hash"
+                return@setOnClickListener
+            }
+            status.text = "Создаю ссылку входа…"
+            runRust({ RustBridge.nativeRequestQr(id, hash, sessionPath) }) { result ->
+                if (result.startsWith("tg://login?")) {
+                    status.text = "Подтверди вход в открывшемся Telegram, затем нажми «Проверить QR-вход»"
+                    try {
+                        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(result)))
+                    } catch (_: Exception) {
+                        status.text = "Не удалось открыть Telegram. Установи официальный Telegram."
+                    }
+                } else {
+                    status.text = result
+                }
+            }
+        }
+
+        qrCheckButton.setOnClickListener {
+            status.text = "Проверяю QR-вход…"
+            runRust({ RustBridge.nativeCheckQr() })
         }
 
         codeButton.setOnClickListener {
@@ -120,7 +151,7 @@ class MainActivity : Activity() {
 
     private fun runRust(call: () -> String, after: ((String) -> Unit)? = null) {
         Thread {
-            val result = try { call() } catch (e: UnsatisfiedLinkError) { "Ошибка: Rust-библиотека не собрана" }
+            val result = try { call() } catch (_: UnsatisfiedLinkError) { "Ошибка: Rust-библиотека не собрана" }
             runOnUiThread {
                 if (after != null) after(result) else status.text = result
             }
