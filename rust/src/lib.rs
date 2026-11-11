@@ -287,9 +287,6 @@ fn dialogs() -> String {
         while let Some(dialog) = dialogs.next().await.map_err(|e| e.to_string())? {
             let peer = dialog.peer();
             lines.push(format!("{}|{}", lines.len(), peer.name().unwrap_or("Без названия")));
-            if lines.len() >= 30 {
-                break;
-            }
         }
         Ok::<_, String>(lines)
     });
@@ -330,7 +327,7 @@ fn messages(index: usize) -> String {
     };
 
     let result = with_dialog(engine, index, |peer, client| async move {
-        let mut iterator = client.iter_messages(peer).limit(30);
+        let mut iterator = client.iter_messages(peer).limit(100);
         let mut lines = Vec::new();
         while let Some(message) = iterator.next().await.map_err(|e| e.to_string())? {
             let text = message.text().trim();
