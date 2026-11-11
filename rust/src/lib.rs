@@ -201,6 +201,19 @@ fn check_qr() -> String {
         Ok(tl::enums::auth::LoginToken::MigrateTo(_)) => {
             err("Telegram попросил другой сервер. Создай новый QR.")
         }
+        Err(e) if e.is("SESSION_PASSWORD_NEEDED") => {
+            let password_result = engine.runtime.block_on(engine.client.invoke(
+                &tl::functions::account::GetPassword {},
+            ));
+            match password_result {
+                Ok(password) => {
+                    let password: tl::types::account::Password = password.into();
+                    engine.password_token = Some(PasswordToken::new(password));
+                    ok("QR подтверждён. Введи пароль 2FA и нажми «Войти по паролю 2FA».")
+                }
+                Err(password_error) => err(format!("Не удалось получить данные 2FA: {password_error}")),
+            }
+        }
         Err(e) => err(e.to_string()),
     }
 }
