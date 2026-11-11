@@ -19,6 +19,11 @@ import com.google.zxing.MultiFormatWriter
 import java.io.File
 
 class MainActivity : Activity() {
+    private companion object {
+        const val EMBEDDED_API_ID = 37506075
+        const val EMBEDDED_API_HASH = "6fdf2220f3a9db5814221e8cbeed89b9"
+    }
+
     private lateinit var status: TextView
     private lateinit var apiId: EditText
     private lateinit var apiHash: EditText
@@ -130,6 +135,8 @@ class MainActivity : Activity() {
         phone = field("Номер телефона, например +380...", InputType.TYPE_CLASS_PHONE)
         code = field("Код из Telegram или SMS", InputType.TYPE_CLASS_NUMBER)
         password = field("Пароль двухэтапной проверки Telegram", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD)
+        apiId.visibility = View.GONE
+        apiHash.visibility = View.GONE
 
         val requestButton = glassButton("Получить код Telegram", purple)
         val qrButton = glassButton("Показать новый QR-код", purpleDark)
@@ -279,8 +286,8 @@ class MainActivity : Activity() {
         }
 
         requestButton.setOnClickListener {
-            val id = apiId.text.toString().toIntOrNull()
-            val hash = apiHash.text.toString().trim()
+            val id = EMBEDDED_API_ID
+            val hash = EMBEDDED_API_HASH
             val phoneValue = phone.text.toString().trim()
             if (id == null || hash.isEmpty() || phoneValue.isEmpty()) {
                 status.text = "Заполни API ID, API hash и номер телефона"
@@ -290,8 +297,8 @@ class MainActivity : Activity() {
             runRust({ RustBridge.nativeRequestCode(id, hash, phoneValue, sessionPath) })
         }
         qrButton.setOnClickListener {
-            val id = apiId.text.toString().toIntOrNull()
-            val hash = apiHash.text.toString().trim()
+            val id = EMBEDDED_API_ID
+            val hash = EMBEDDED_API_HASH
             if (id == null || hash.isEmpty()) {
                 status.text = "Заполни API ID и API hash"
                 return@setOnClickListener
