@@ -83,9 +83,9 @@ class MainActivity : Activity() {
         root.addView(password)
         root.addView(passwordButton)
         root.addView(dialogsButton)
-        root.addView(qrImage)
         root.addView(status)
         root.addView(dialogs)
+        root.addView(qrImage)
 
         val sessionPath = File(filesDir, "telegram.session").absolutePath
 
