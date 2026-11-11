@@ -1,6 +1,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.example.telegramrust">
     <uses-permission android:name="android.permission.INTERNET" />
-    <application android:theme="@style/Theme.TelegramRustClient" android:label="Telegram Rust Client" android:allowBackup="false" android:supportsRtl="true">
+    <application android:theme="@style/Theme.TelegramRustClient" android:icon="@drawable/rustgram_logo" android:label="RustGram" android:allowBackup="false" android:supportsRtl="true">
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

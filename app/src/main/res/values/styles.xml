@@ -1,6 +1,12 @@
 <resources>
-    <style name="Theme.TelegramRustClient" parent="android:style/Theme.Material.Light.NoActionBar">
+    <style name="Theme.TelegramRustClient" parent="android:style/Theme.Material.NoActionBar">
         <item name="android:fontFamily">sans</item>
-        <item name="android:colorAccent">#229ED9</item>
+        <item name="android:windowBackground">#000000</item>
+        <item name="android:colorAccent">#4F46E5</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:statusBarColor">#000000</item>
+        <item name="android:navigationBarColor">#000000</item>
+        <item name="android:textColorPrimary">#F5F3FF</item>
+        <item name="android:textColorSecondary">#8B8B98</item>
     </style>
 </resources>

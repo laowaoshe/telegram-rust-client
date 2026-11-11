@@ -37,10 +37,13 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.statusBarColor = Color.BLACK
+        window.navigationBarColor = Color.BLACK
 
         val padding = (20 * resources.displayMetrics.density).toInt()
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.BLACK)
             setPadding(padding, padding, padding, padding)
             gravity = Gravity.TOP
         }
@@ -49,16 +52,25 @@ class MainActivity : Activity() {
         fun text(value: String, size: Float): TextView = TextView(this).apply {
             text = value
             textSize = size
-            setTextColor(Color.DKGRAY)
+            setTextColor(Color.rgb(245, 243, 255))
             setPadding(0, 8, 0, 8)
         }
 
         fun field(hintText: String, type: Int = InputType.TYPE_CLASS_TEXT): EditText = EditText(this).apply {
             hint = hintText
             inputType = type
+            setTextColor(Color.rgb(245, 243, 255))
+            setHintTextColor(Color.rgb(139, 139, 152))
+            backgroundTintList = android.content.res.ColorStateList.valueOf(Color.rgb(79, 70, 229))
         }
 
-        root.addView(text("Telegram Rust Client", 24f))
+        val logo = ImageView(this).apply {
+            setImageResource(R.drawable.rustgram_logo)
+            adjustViewBounds = true
+            setPadding(0, 0, 0, 12)
+        }
+        root.addView(logo, LinearLayout.LayoutParams(-1, (92 * resources.displayMetrics.density).toInt()))
+        root.addView(text("RustGram", 24f))
         status = text("Готово к подключению", 16f)
         root.addView(status)
 
