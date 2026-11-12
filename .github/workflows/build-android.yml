@@ -7,6 +7,7 @@ on:
 
 jobs:
   build:
+    # Фиксированный runner избегает зависаний в очереди ubuntu-latest.
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout
@@ -26,7 +27,24 @@ jobs:
       - name: Select Android NDK
         shell: bash
         run: |
-          echo "ANDROID_NDK_HOME=$(find "$ANDROID_SDK_ROOT/ndk" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)" >> "$GITHUB_ENV"
+          NDK_HOME="$(find "$ANDROID_SDK_ROOT/ndk" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+          echo "ANDROID_NDK_HOME=$NDK_HOME" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_VERSION=$(basename "$NDK_HOME")" >> "$GITHUB_ENV"
+
+      - name: Build TDLib JSON for Android
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/tdlib/td.git third_party/td
+          cd third_party/td/example/android
+          ./build-openssl.sh "$ANDROID_SDK_ROOT" "$ANDROID_NDK_VERSION" third-party/openssl
+          ./build-tdlib.sh "$ANDROID_SDK_ROOT" "$ANDROID_NDK_VERSION" third-party/openssl c++_shared JSON 21 "arm64-v8a armeabi-v7a x86_64"
+          echo "TDLIB_ANDROID_LIB_ROOT=$PWD/tdlib/libs" >> "$GITHUB_ENV"
+          cd "$GITHUB_WORKSPACE"
+          for ABI in arm64-v8a armeabi-v7a x86_64; do
+            mkdir -p "app/src/main/jniLibs/$ABI"
+            cp "third_party/td/example/android/tdlib/libs/$ABI/"*.so "app/src/main/jniLibs/$ABI/"
+          done
 
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --locked

@@ -25,6 +25,7 @@ class AnimatedBackdropView @JvmOverloads constructor(
 
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.DITHER_FLAG)
     private var progress = 0f
+    private var themeMode = "midnight"
     private val animator = ValueAnimator.ofFloat(0f, 1f).apply {
         duration = 12000L
         repeatCount = ValueAnimator.INFINITE
@@ -45,9 +46,22 @@ class AnimatedBackdropView @JvmOverloads constructor(
         super.onDetachedFromWindow()
     }
 
+    fun setThemeMode(mode: String) {
+        themeMode = mode
+        invalidate()
+    }
+
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        canvas.drawColor(Color.rgb(5, 5, 10))
+        val light = themeMode == "light"
+        val amoled = themeMode == "amoled"
+        canvas.drawColor(
+            when {
+                light -> Color.rgb(236, 240, 248)
+                amoled -> Color.BLACK
+                else -> Color.rgb(5, 5, 10)
+            }
+        )
 
         val width = width.toFloat()
         val height = height.toFloat()
@@ -61,21 +75,21 @@ class AnimatedBackdropView @JvmOverloads constructor(
             width * (0.16f + 0.05f * kotlin.math.sin(phase).toFloat()),
             height * (0.18f + 0.08f * kotlin.math.cos(phase * 0.8f).toFloat()),
             radius,
-            Color.argb(105, 75, 55, 205)
+            if (light) Color.argb(66, 80, 96, 220) else Color.argb(105, 75, 55, 205)
         )
         drawGlow(
             canvas,
             width * (0.86f + 0.07f * kotlin.math.cos(phase * 0.7f).toFloat()),
             height * (0.42f + 0.10f * kotlin.math.sin(phase * 0.9f).toFloat()),
             radius * 0.82f,
-            Color.argb(78, 25, 110, 185)
+            if (light) Color.argb(48, 35, 128, 190) else Color.argb(78, 25, 110, 185)
         )
         drawGlow(
             canvas,
             width * (0.48f + 0.10f * kotlin.math.sin(phase * 0.55f).toFloat()),
             height * (0.92f + 0.06f * kotlin.math.cos(phase * 0.6f).toFloat()),
             radius * 0.68f,
-            Color.argb(62, 140, 55, 190)
+            if (light) Color.argb(40, 150, 70, 180) else Color.argb(62, 140, 55, 190)
         )
     }
 

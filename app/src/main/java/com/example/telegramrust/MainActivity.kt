@@ -5,6 +5,7 @@ import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -43,6 +44,7 @@ class MainActivity : Activity() {
         const val REQUEST_FILE = 7101
         const val REQUEST_AUDIO = 7102
         const val REQUEST_LOCATION = 7103
+        const val REQUEST_WALLPAPER = 7104
     }
 
     private lateinit var status: TextView
@@ -66,6 +68,11 @@ class MainActivity : Activity() {
     private lateinit var qrImage: ImageView
     private lateinit var scroll: ScrollView
     private lateinit var floatingBack: Button
+    private lateinit var loadOlderButton: Button
+    private lateinit var backdrop: AnimatedBackdropView
+    private lateinit var wallpaperLayer: ImageView
+    private val messageRows = mutableListOf<String>()
+    private var oldestMessageId = 0
     private var selectedDialog = -1
     private var selectedDialogTitle = ""
     private var selectedDialogUsername = ""
@@ -171,6 +178,30 @@ class MainActivity : Activity() {
             },
             REQUEST_FILE
         )
+    }
+
+    private fun launchWallpaperPicker() {
+        startActivityForResult(
+            Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "image/*"
+            },
+            REQUEST_WALLPAPER
+        )
+    }
+
+    private fun saveWallpaper(uri: Uri): Boolean {
+        return try {
+            val target = File(filesDir, "chat-wallpaper")
+            contentResolver.openInputStream(uri)?.use { input ->
+                FileOutputStream(target).use { output -> input.copyTo(output) }
+            } ?: return false
+            wallpaperLayer.setImageBitmap(BitmapFactory.decodeFile(target.absolutePath))
+            wallpaperLayer.visibility = View.VISIBLE
+            true
+        } catch (_: Exception) {
+            false
+        }
     }
 
     private fun toggleVoiceRecording() {
@@ -349,7 +380,9 @@ class MainActivity : Activity() {
             textSize = 15f
             setTextColor(white)
             setHintTextColor(muted)
-            background = glass(surface, 16)
+            // Поля остаются частью стеклянной панели, а не отдельными
+            // контрастными «плашками».
+            background = glass(Color.argb(74, 18, 18, 30), 14)
             setPadding(dp(16), 0, dp(16), 0)
         }
 
@@ -366,6 +399,7 @@ class MainActivity : Activity() {
         }
         authPanel.addView(text("Вход в Telegram", 20f))
         authPanel.addView(text("Войди по QR-коду или номеру телефона. Сессия хранится только на устройстве.", 13f, muted))
+        authPanel.addView(text("Код чаще приходит в приложение Telegram на другом устройстве. SMS — запасной способ.", 12f, muted))
         addGap(authPanel, 6)
 
         apiId = field("API ID", InputType.TYPE_CLASS_NUMBER)
@@ -375,6 +409,8 @@ class MainActivity : Activity() {
         password = field("Пароль двухэтапной проверки Telegram", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD)
         apiId.visibility = View.GONE
         apiHash.visibility = View.GONE
+        code.visibility = View.GONE
+        password.visibility = View.GONE
 
         val requestButton = glassButton("Получить код Telegram", purple)
         val qrButton = glassButton("Показать новый QR-код", purpleDark)
@@ -401,10 +437,12 @@ class MainActivity : Activity() {
         authPanel.addView(qrCheckButton)
         addGap(authPanel)
         authPanel.addView(code)
+        codeButton.visibility = View.GONE
         addGap(authPanel)
         authPanel.addView(codeButton)
         addGap(authPanel)
         authPanel.addView(password)
+        passwordButton.visibility = View.GONE
         addGap(authPanel)
         authPanel.addView(passwordButton)
         addGap(authPanel)
@@ -476,6 +514,11 @@ class MainActivity : Activity() {
         chatToolbar.addView(profileButton)
         chatScreen.addView(chatToolbar)
         addGap(chatScreen)
+        loadOlderButton = glassButton("Загрузить более ранние сообщения", surfaceSoft).apply {
+            visibility = View.GONE
+        }
+        chatScreen.addView(loadOlderButton)
+        addGap(chatScreen, 4)
         messages = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(0, dp(8), 0, dp(8))
@@ -563,9 +606,29 @@ class MainActivity : Activity() {
             setPadding(dp(16), dp(14), dp(16), dp(16))
         }
         settingsScreen.addView(text("Настройки", 22f))
-        settingsScreen.addView(text("Тема: AMOLED Glass", 16f))
-        settingsScreen.addView(text("Акцент: глубокий фиолетовый", 16f, muted))
-        settingsScreen.addView(text("Сессия сохраняется локально на устройстве.", 15f, muted))
+        settingsScreen.addView(text("Внешний вид", 16f, muted))
+        val themeRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val amoledTheme = glassButton("AMOLED", purpleDark)
+        val darkTheme = glassButton("Тёмная", surfaceSoft)
+        val lightTheme = glassButton("Светлая", surfaceSoft)
+        themeRow.addView(amoledTheme, LinearLayout.LayoutParams(0, -2, 1f))
+        themeRow.addView(darkTheme, LinearLayout.LayoutParams(0, -2, 1f).apply {
+            setMargins(dp(5), 0, dp(5), 0)
+        })
+        themeRow.addView(lightTheme, LinearLayout.LayoutParams(0, -2, 1f))
+        settingsScreen.addView(themeRow)
+        addGap(settingsScreen, 8)
+        val wallpaperButton = glassButton("🖼  Выбрать обои чата", surfaceSoft)
+        val clearWallpaperButton = glassButton("Убрать свои обои", surface)
+        settingsScreen.addView(wallpaperButton)
+        addGap(settingsScreen, 6)
+        settingsScreen.addView(clearWallpaperButton)
+        settingsScreen.addView(text("Обои хранятся только на этом устройстве.", 13f, muted))
+        addGap(settingsScreen, 8)
+        settingsScreen.addView(text("Сессия и настройки сохраняются локально.", 15f, muted))
         fun settingToggle(title: String, checked: Boolean): Switch = Switch(this).apply {
             text = title
             textSize = 15f
@@ -627,17 +690,24 @@ class MainActivity : Activity() {
             val id = EMBEDDED_API_ID
             val hash = EMBEDDED_API_HASH
             val phoneValue = phone.text.toString().trim()
-            if (id == null || hash.isEmpty() || phoneValue.isEmpty()) {
-                status.text = "Заполни API ID, API hash и номер телефона"
+            if (hash.isEmpty() || phoneValue.isEmpty()) {
+                status.text = "Введи номер в международном формате: +380…"
                 return@setOnClickListener
             }
             status.text = "Запрашиваю код…"
-            runRust({ RustBridge.nativeRequestCode(id, hash, phoneValue, sessionPath) })
+            runRust({ RustBridge.nativeRequestCode(id, hash, phoneValue, sessionPath) }) { result ->
+                status.text = result
+                if (!result.startsWith("Ошибка:")) {
+                    code.visibility = View.VISIBLE
+                    codeButton.visibility = View.VISIBLE
+                    code.requestFocus()
+                }
+            }
         }
         qrButton.setOnClickListener {
             val id = EMBEDDED_API_ID
             val hash = EMBEDDED_API_HASH
-            if (id == null || hash.isEmpty()) {
+            if (hash.isEmpty()) {
                 status.text = "Заполни API ID и API hash"
                 return@setOnClickListener
             }
@@ -660,13 +730,24 @@ class MainActivity : Activity() {
             val value = code.text.toString().trim()
             if (value.isEmpty()) { status.text = "Введи код из Telegram или SMS"; return@setOnClickListener }
             status.text = "Проверяю код…"
-            runRust({ RustBridge.nativeSubmitCode(value) })
+            runRust({ RustBridge.nativeSubmitCode(value) }) { result ->
+                status.text = result
+                if (result.contains("парол", ignoreCase = true)) {
+                    password.visibility = View.VISIBLE
+                    passwordButton.visibility = View.VISIBLE
+                }
+            }
         }
         passwordButton.setOnClickListener {
             val value = password.text.toString()
             if (value.isEmpty()) { status.text = "Введи пароль 2FA"; return@setOnClickListener }
             status.text = "Проверяю пароль…"
-            runRust({ RustBridge.nativeSubmitPassword(value) })
+            runRust({ RustBridge.nativeSubmitPassword(value) }) { result ->
+                status.text = result
+                if (result.startsWith("Вход выполнен")) {
+                    dialogsButton.performClick()
+                }
+            }
         }
         dialogsButton.setOnClickListener {
             status.text = "Загружаю диалоги…"
@@ -711,10 +792,23 @@ class MainActivity : Activity() {
 
         // Анимированный фон находится под ScrollView, поэтому цветные «световые
         // пятна» медленно двигаются и просматриваются через полупрозрачные панели.
-        val backdrop = AnimatedBackdropView(this)
+        backdrop = AnimatedBackdropView(this)
+        backdrop.setThemeMode(getSharedPreferences("appearance", MODE_PRIVATE)
+            .getString("theme", "midnight") ?: "midnight")
+        wallpaperLayer = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            alpha = 0.20f
+            visibility = View.GONE
+        }
+        val savedWallpaper = File(filesDir, "chat-wallpaper")
+        if (savedWallpaper.exists()) {
+            wallpaperLayer.setImageBitmap(BitmapFactory.decodeFile(savedWallpaper.absolutePath))
+            wallpaperLayer.visibility = View.VISIBLE
+        }
         val content = FrameLayout(this).apply {
             setBackgroundColor(black)
             addView(backdrop, FrameLayout.LayoutParams(-1, -1))
+            addView(wallpaperLayer, FrameLayout.LayoutParams(-1, -1))
             addView(scroll, FrameLayout.LayoutParams(-1, -1))
         }
         floatingBack = glassButton("‹", surfaceSoft)
@@ -730,6 +824,30 @@ class MainActivity : Activity() {
             }
         )
         setContentView(content)
+
+        fun chooseTheme(mode: String) {
+            getSharedPreferences("appearance", MODE_PRIVATE).edit()
+                .putString("theme", mode).apply()
+            backdrop.setThemeMode(mode)
+            status.text = when (mode) {
+                "light" -> "Светлая тема включена"
+                "amoled" -> "AMOLED-тема включена"
+                else -> "Тёмная тема включена"
+            }
+        }
+        amoledTheme.setOnClickListener { chooseTheme("amoled") }
+        darkTheme.setOnClickListener { chooseTheme("midnight") }
+        lightTheme.setOnClickListener { chooseTheme("light") }
+        wallpaperButton.setOnClickListener { launchWallpaperPicker() }
+        clearWallpaperButton.setOnClickListener {
+            File(filesDir, "chat-wallpaper").delete()
+            wallpaperLayer.setImageDrawable(null)
+            wallpaperLayer.visibility = View.GONE
+            status.text = "Свои обои убраны"
+        }
+        loadOlderButton.setOnClickListener {
+            if (selectedDialog >= 0 && oldestMessageId > 0) loadMessages(selectedDialog, true)
+        }
         authPanel.alpha = 0f
         authPanel.translationY = dp(10).toFloat()
         authPanel.post {
@@ -831,38 +949,61 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun loadMessages(index: Int) {
-        runRust({ RustBridge.nativeMessages(index) }) { result ->
-            messages.removeAllViews()
+    private fun loadMessages(index: Int, older: Boolean = false) {
+        val offset = if (older) oldestMessageId else 0
+        status.text = if (older) "Загружаю более ранние сообщения…" else "Загружаю последние сообщения…"
+        runRust({ RustBridge.nativeMessages(index, offset, 100) }) { result ->
             if (result.startsWith("Ошибка:")) {
+                if (!older) messages.removeAllViews()
                 addMessageBlock(result, outgoing = false, isError = true)
                 status.text = result
                 return@runRust
             }
             val rows = result.lines().filter { it.isNotBlank() }
-            if (rows.isEmpty()) addMessageBlock("Сообщений пока нет", false, false)
-            else {
-                var previousDate = ""
-                rows.forEach { row ->
-                val parts = row.split("\t", limit = 3)
-                val outgoing = parts.firstOrNull() == "OUT"
-                val timestamp = parts.getOrNull(1).orEmpty()
-                val value = parts.getOrNull(2) ?: row
-                val date = shortDate(timestamp)
-                if (date.isNotBlank() && date != previousDate) {
-                    addDateDivider(date)
-                    previousDate = date
-                }
-                addMessageBlock(
-                    value.replace(Regex("^#[0-9]+[[:space:]]"), ""),
-                    outgoing,
-                    false,
-                    shortTime(timestamp)
-                )
-                }
+            if (older) {
+                val known = messageRows.toSet()
+                messageRows.addAll(0, rows.filterNot { it in known })
+            } else {
+                messageRows.clear()
+                messageRows.addAll(rows)
             }
+            oldestMessageId = messageRows.asSequence()
+                .mapNotNull { messageId(it) }
+                .minOrNull() ?: 0
+            loadOlderButton.visibility =
+                if (rows.size >= 100 && oldestMessageId > 1) View.VISIBLE else View.GONE
+            renderMessageRows()
             status.text = "История загружена"
-            scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
+            if (!older) scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
+        }
+    }
+
+    private fun messageId(row: String): Int? =
+        Regex("\\t[^\\t]*\\t#(\\d+)").find(row)?.groupValues?.getOrNull(1)?.toIntOrNull()
+
+    private fun renderMessageRows() {
+        messages.removeAllViews()
+        if (messageRows.isEmpty()) {
+            addMessageBlock("Сообщений пока нет", false, false)
+            return
+        }
+        var previousDate = ""
+        messageRows.forEach { row ->
+            val parts = row.split("\t", limit = 3)
+            val outgoing = parts.firstOrNull() == "OUT"
+            val timestamp = parts.getOrNull(1).orEmpty()
+            val value = parts.getOrNull(2) ?: row
+            val date = shortDate(timestamp)
+            if (date.isNotBlank() && date != previousDate) {
+                addDateDivider(date)
+                previousDate = date
+            }
+            addMessageBlock(
+                value.replace(Regex("^#[0-9]+[[:space:]]"), ""),
+                outgoing,
+                false,
+                shortTime(timestamp)
+            )
         }
     }
 
@@ -944,6 +1085,11 @@ class MainActivity : Activity() {
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQUEST_WALLPAPER && resultCode == RESULT_OK) {
+            val uri = data?.data ?: return
+            status.text = if (saveWallpaper(uri)) "Обои чата обновлены" else "Не удалось применить обои"
+            return
+        }
         if (requestCode == REQUEST_FILE && resultCode == RESULT_OK) {
             val uri: Uri = data?.data ?: return
             val name = uri.lastPathSegment?.substringAfterLast('/') ?: "выбранный файл"

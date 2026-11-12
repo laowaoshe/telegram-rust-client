@@ -13,7 +13,7 @@ object RustBridge {
     external fun nativeSubmitPassword(password: String): String
     external fun nativeDialogs(): String
     external fun nativeSearchUsername(query: String): String
-    external fun nativeMessages(index: Int): String
+    external fun nativeMessages(index: Int, offsetId: Int, limit: Int): String
     external fun nativeSendMessage(index: Int, text: String): String
     external fun nativeSendFile(index: Int, path: String, caption: String): String
 }
