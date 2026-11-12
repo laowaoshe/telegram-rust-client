@@ -1,629 +1,105 @@
-use std::sync::{Arc, Mutex, OnceLock};
-
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as Base64Engine};
-use grammers_client::client::{LoginToken, PasswordToken};
-use grammers_client::message::InputMessage;
-use grammers_client::tl;
-use grammers_client::{Client, SignInError};
-use grammers_mtsender::SenderPool;
-use grammers_session::storages::SqliteSession;
+use std::collections::HashMap;
+use std::ffi::{CStr, CString};
+use std::fs;
+use std::os::raw::{c_char, c_double, c_int, c_void};
+use std::path::Path;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 use jni::objects::{JClass, JString};
 use jni::sys::{jint, jstring};
 use jni::JNIEnv;
-use tokio::runtime::{Builder, Runtime};
+use serde_json::{json, Value};
 
-struct Engine {
-    api_id: i32,
-    api_hash: String,
-    runtime: Runtime,
-    client: Client,
-    login_token: Option<LoginToken>,
-    password_token: Option<PasswordToken>,
+#[link(name = "tdjson")]
+extern "C" {
+    fn td_json_client_create() -> *mut c_void;
+    fn td_json_client_send(client: *mut c_void, request: *const c_char);
+    fn td_json_client_receive(client: *mut c_void, timeout: c_double) -> *const c_char;
+    fn td_json_client_destroy(client: *mut c_void);
+    fn td_set_log_verbosity_level(level: c_int);
 }
 
+struct Engine { client: *mut c_void, api_id: i32, api_hash: String, serial: u64, chats: Vec<i64>, names: HashMap<i64, String> }
+unsafe impl Send for Engine {}
+unsafe impl Sync for Engine {}
+impl Drop for Engine { fn drop(&mut self) { if !self.client.is_null() { unsafe { td_json_client_destroy(self.client) } } } }
 static ENGINE: OnceLock<Mutex<Option<Engine>>> = OnceLock::new();
-
-fn engine_slot() -> &'static Mutex<Option<Engine>> {
-    ENGINE.get_or_init(|| Mutex::new(None))
+fn slot() -> &'static Mutex<Option<Engine>> { ENGINE.get_or_init(|| Mutex::new(None)) }
+fn error(s: impl Into<String>) -> String { format!("Ошибка: {}", s.into()) }
+fn cstr(s: &str) -> Result<CString, String> { CString::new(s).map_err(|_| "недопустимый нулевой символ".into()) }
+fn receive(e: &Engine, timeout: f64) -> Option<Value> {
+    let p = unsafe { td_json_client_receive(e.client, timeout) }; if p.is_null() { return None; }
+    serde_json::from_str(unsafe { CStr::from_ptr(p) }.to_string_lossy().as_ref()).ok()
 }
-
-fn ok(message: impl Into<String>) -> String {
-    message.into()
+fn send(e: &Engine, mut value: Value) -> Result<String, String> {
+    let extra = format!("rustgram-{}", e.serial);
+    if let Value::Object(m) = &mut value { m.insert("@extra".into(), Value::String(extra.clone())); }
+    let req = cstr(&serde_json::to_string(&value).map_err(|x| x.to_string())?)?;
+    unsafe { td_json_client_send(e.client, req.as_ptr()) }; Ok(extra)
 }
-
-fn err(message: impl Into<String>) -> String {
-    format!("Ошибка: {}", message.into())
+fn cache_chat(e: &mut Engine, chat: &Value) {
+    let id = chat.get("id").and_then(Value::as_i64).unwrap_or(0); if id == 0 { return; }
+    if !e.chats.contains(&id) { e.chats.push(id); }
+    e.names.insert(id, chat.get("title").and_then(Value::as_str).unwrap_or("Без названия").to_string());
 }
-
-fn make_runtime() -> Result<Runtime, String> {
-    Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| e.to_string())
-}
-
-fn create_client(runtime: &Runtime, api_id: i32, session_path: &str) -> Result<Client, String> {
-    runtime.block_on(async {
-        let session = Arc::new(
-            SqliteSession::open(session_path)
-                .await
-                .map_err(|e| e.to_string())?,
-        );
-        let grammers_mtsender::SenderPool { runner, handle, .. } =
-            SenderPool::new(Arc::clone(&session), api_id);
-        let client = Client::new(handle);
-        tokio::spawn(runner.run());
-        Ok::<_, String>(client)
-    })
-}
-
-fn new_engine(api_id: i32, api_hash: String, session_path: String) -> Result<Engine, String> {
-    let runtime = make_runtime()?;
-    let client = create_client(&runtime, api_id, &session_path)?;
-    Ok(Engine {
-        api_id,
-        api_hash,
-        runtime,
-        client,
-        login_token: None,
-        password_token: None,
-    })
-}
-
-fn start_login(api_id: i32, api_hash: String, phone: String, session_path: String) -> String {
-    let runtime = match make_runtime() {
-        Ok(value) => value,
-        Err(e) => return err(format!("не удалось запустить Rust runtime: {e}")),
-    };
-    let client = match create_client(&runtime, api_id, &session_path) {
-        Ok(value) => value,
-        Err(e) => return err(e),
-    };
-
-    let result = runtime.block_on(async {
-        if client.is_authorized().await.map_err(|e| e.to_string())? {
-            return Ok::<_, String>((client.clone(), None));
-        }
-        let token = client
-            .request_login_code(&phone, &api_hash)
-            .await
-            .map_err(|e| e.to_string())?;
-        Ok((client.clone(), Some(token)))
-    });
-
-    match result {
-        Ok((client, token)) => {
-            let mut slot = match engine_slot().lock() {
-                Ok(value) => value,
-                Err(_) => return err("внутреннее состояние Rust повреждено"),
-            };
-            *slot = Some(Engine {
-                api_id,
-                api_hash,
-                runtime,
-                client,
-                login_token: token,
-                password_token: None,
-            });
-            if slot.as_ref().and_then(|e| e.login_token.as_ref()).is_some() {
-                ok("Код отправлен в Telegram. Введи код из Telegram или SMS.")
-            } else {
-                ok("Сессия уже авторизована. Можно загрузить диалоги.")
+fn request(e: &mut Engine, value: Value) -> Result<Value, String> {
+    e.serial = e.serial.wrapping_add(1); let wanted = send(e, value)?; let until = Instant::now() + Duration::from_secs(25);
+    while Instant::now() < until {
+        if let Some(v) = receive(e, 1.0) {
+            if v.get("@type").and_then(Value::as_str) == Some("updateNewChat") { cache_chat(e, &v["chat"]); }
+            if v.get("@extra").and_then(Value::as_str) == Some(wanted.as_str()) {
+                if v.get("@type").and_then(Value::as_str) == Some("error") { return Err(v.get("message").and_then(Value::as_str).unwrap_or("TDLib error").into()); }
+                return Ok(v);
             }
         }
-        Err(e) => err(e),
     }
+    Err("TDLib не ответил вовремя".into())
 }
-
-fn export_qr_link(engine: &mut Engine) -> String {
-    let result = engine.runtime.block_on(engine.client.invoke(
-        &tl::functions::auth::ExportLoginToken {
-            api_id: engine.api_id,
-            api_hash: engine.api_hash.clone(),
-            except_ids: Vec::new(),
-        },
-    ));
-
-    match result {
-        Ok(tl::enums::auth::LoginToken::Token(token)) => {
-            let encoded = URL_SAFE_NO_PAD.encode(token.token);
-            format!("tg://login?token={encoded}")
-        }
-        Ok(tl::enums::auth::LoginToken::MigrateTo(_)) => {
-            err("Telegram попросил другой сервер. Повтори QR-вход ещё раз.")
-        }
-        Ok(tl::enums::auth::LoginToken::Success(_)) => {
-            ok("QR уже подтверждён. Нажми «Проверить QR».")
-        }
-        Err(e) => err(e.to_string()),
-    }
+fn new_engine(id: i32, hash: String, session: &str) -> Result<Engine, String> {
+    let _ = fs::create_dir_all(Path::new(session)); let client = unsafe { td_json_client_create() };
+    if client.is_null() { return Err("не удалось создать TDLib client".into()); } unsafe { td_set_log_verbosity_level(0); }
+    let mut e = Engine { client, api_id: id, api_hash: hash, serial: 0, chats: Vec::new(), names: HashMap::new() };
+    request(&mut e, json!({"@type":"setTdlibParameters","parameters":{"@type":"tdlibParameters","database_directory":session,"files_directory":session,"use_file_database":true,"use_chat_info_database":true,"use_message_database":true,"use_secret_chats":false,"api_id":e.api_id,"api_hash":e.api_hash,"system_language_code":"ru","device_model":"Android","system_version":"Android","application_version":"RustGram TDLib","enable_storage_optimizer":true,"use_test_dc":false}}))?;
+    request(&mut e, json!({"@type":"checkDatabaseEncryptionKey","encryption_key":""}))?; Ok(e)
 }
-
-fn request_qr(api_id: i32, api_hash: String, session_path: String) -> String {
-    let mut slot = match engine_slot().lock() {
-        Ok(value) => value,
-        Err(_) => return err("внутреннее состояние Rust повреждено"),
-    };
-
-    if slot.is_none() {
-        *slot = match new_engine(api_id, api_hash, session_path) {
-            Ok(value) => Some(value),
-            Err(e) => return err(e),
-        };
-    }
-
-    match slot.as_mut() {
-        Some(engine) => export_qr_link(engine),
-        None => err("не удалось создать Telegram-сессию"),
-    }
+fn with_engine<F: FnOnce(&mut Engine) -> Result<String, String>>(f: F) -> String {
+    let mut g = match slot().lock() { Ok(x) => x, Err(_) => return error("внутреннее состояние Rust повреждено") };
+    match g.as_mut() { Some(e) => f(e).unwrap_or_else(error), None => error("сначала подключись к Telegram") }
 }
-
-fn check_qr() -> String {
-    let mut slot = match engine_slot().lock() {
-        Ok(value) => value,
-        Err(_) => return err("внутреннее состояние Rust повреждено"),
-    };
-    let engine = match slot.as_mut() {
-        Some(value) => value,
-        None => return err("сначала нажми «Войти через QR»"),
-    };
-
-    let result = engine.runtime.block_on(engine.client.invoke(
-        &tl::functions::auth::ExportLoginToken {
-            api_id: engine.api_id,
-            api_hash: engine.api_hash.clone(),
-            except_ids: Vec::new(),
-        },
-    ));
-
-    match result {
-        Ok(tl::enums::auth::LoginToken::Success(_)) => {
-            match engine.runtime.block_on(engine.client.is_authorized()) {
-                Ok(true) => ok("QR подтверждён. Вход выполнен."),
-                Ok(false) => {
-                    let password_result = engine.runtime.block_on(engine.client.invoke(
-                        &tl::functions::account::GetPassword {},
-                    ));
-                    match password_result {
-                        Ok(password) => {
-                            let password: tl::types::account::Password = password.into();
-                            engine.password_token = Some(PasswordToken::new(password));
-                            ok("QR подтверждён. Введи пароль 2FA и нажми «Войти по паролю 2FA».")
-                        }
-                        Err(e) => err(format!("QR подтверждён, но нужен пароль 2FA: {e}")),
-                    }
-                }
-                Err(e) => err(e.to_string()),
-            }
-        }
-        Ok(tl::enums::auth::LoginToken::Token(_)) => {
-            err("QR ещё не подтверждён. Открой ссылку Telegram и подтверди вход.")
-        }
-        Ok(tl::enums::auth::LoginToken::MigrateTo(_)) => {
-            err("Telegram попросил другой сервер. Создай новый QR.")
-        }
-        Err(e) if e.is("SESSION_PASSWORD_NEEDED") => {
-            let password_result = engine.runtime.block_on(engine.client.invoke(
-                &tl::functions::account::GetPassword {},
-            ));
-            match password_result {
-                Ok(password) => {
-                    let password: tl::types::account::Password = password.into();
-                    engine.password_token = Some(PasswordToken::new(password));
-                    ok("QR подтверждён. Введи пароль 2FA и нажми «Войти по паролю 2FA».")
-                }
-                Err(password_error) => err(format!("Не удалось получить данные 2FA: {password_error}")),
-            }
-        }
-        Err(e) => err(e.to_string()),
-    }
+fn ensure(id: i32, hash: String, session: String) -> Result<(), String> {
+    let mut g = slot().lock().map_err(|_| "внутреннее состояние Rust повреждено".to_string())?;
+    if g.is_none() { *g = Some(new_engine(id, hash, &session)?); } Ok(())
 }
-
-fn submit_code(code: String) -> String {
-    let mut slot = match engine_slot().lock() {
-        Ok(value) => value,
-        Err(_) => return err("внутреннее состояние Rust повреждено"),
-    };
-    let engine = match slot.as_mut() {
-        Some(value) => value,
-        None => return err("сначала нажми «Получить код»"),
-    };
-    let token = match engine.login_token.as_ref() {
-        Some(value) => value,
-        None => return ok("Сессия уже авторизована или код ещё не нужен."),
-    };
-
-    match engine.runtime.block_on(engine.client.sign_in(token, code.trim())) {
-        Ok(user) => {
-            engine.login_token = None;
-            ok(format!("Вход выполнен: {}", user.first_name().unwrap_or("пользователь")))
-        }
-        Err(SignInError::PasswordRequired(password_token)) => {
-            engine.password_token = Some(password_token);
-            ok("Нужен пароль двухэтапной проверки Telegram.")
-        }
-        Err(SignInError::InvalidCode) => err("неверный код. Проверь код и попробуй ещё раз"),
-        Err(SignInError::SignUpRequired) => err("этот номер ещё не зарегистрирован в Telegram"),
-        Err(e) => err(e.to_string()),
-    }
+fn state(e: &mut Engine) -> Result<String, String> { Ok(request(e, json!({"@type":"getAuthorizationState"}))?.get("@type").and_then(Value::as_str).unwrap_or("").into()) }
+fn request_code(id: i32, hash: String, phone: String, session: String) -> String {
+    if let Err(x) = ensure(id, hash, session) { return error(x); }
+    with_engine(|e| { if state(e)? == "authorizationStateReady" { return Ok("Уже выполнен вход".into()); }
+        request(e, json!({"@type":"setAuthenticationPhoneNumber","phone_number":phone,"settings":{"@type":"phoneNumberAuthenticationSettings","allow_flash_call":false,"allow_missed_call":false,"is_current_phone_number":false,"has_unknown_phone_number":false,"allow_sms_retriever_api":false}}))?;
+        Ok("Код отправлен в Telegram или SMS".into()) })
 }
-
-fn submit_password(password: String) -> String {
-    let mut slot = match engine_slot().lock() {
-        Ok(value) => value,
-        Err(_) => return err("внутреннее состояние Rust повреждено"),
-    };
-    let engine = match slot.as_mut() {
-        Some(value) => value,
-        None => return err("сначала запроси код"),
-    };
-    let token = match engine.password_token.take() {
-        Some(value) => value,
-        None => return err("пароль сейчас не требуется"),
-    };
-
-    match engine.runtime.block_on(engine.client.check_password(token, password)) {
-        Ok(user) => {
-            engine.login_token = None;
-            ok(format!("Вход выполнен: {}", user.first_name().unwrap_or("пользователь")))
-        }
-        Err(SignInError::InvalidPassword(_)) => err("неверный пароль Telegram"),
-        Err(e) => err(e.to_string()),
-    }
+fn qr(id: i32, hash: String, session: String) -> String {
+    if let Err(x) = ensure(id, hash, session) { return error(x); }
+    with_engine(|e| { e.serial = e.serial.wrapping_add(1); let wanted = send(e, json!({"@type":"requestQrCodeAuthentication","other_user_ids":[]}))?; let until = Instant::now()+Duration::from_secs(15);
+        while Instant::now() < until { if let Some(v)=receive(e,1.0) { if let Some(link)=v.pointer("authorization_state.link").and_then(Value::as_str) { return Ok(link.into()); } if v.get("@extra").and_then(Value::as_str)==Some(wanted.as_str()) && v.get("@type").and_then(Value::as_str)==Some("error") { return Err(v.get("message").and_then(Value::as_str).unwrap_or("TDLib error").into()); } } }
+        Err("TDLib не вернул QR-ссылку вовремя".into()) })
 }
-
-
-fn search_username(query: String) -> String {
-    let username = query.trim().trim_start_matches('@').to_string();
-    if username.is_empty() {
-        return err("введи username пользователя");
-    }
-    let mut slot = match engine_slot().lock() {
-        Ok(value) => value,
-        Err(_) => return err("внутреннее состояние Rust повреждено"),
-    };
-    let engine = match slot.as_mut() {
-        Some(value) => value,
-        None => return err("сначала подключись к Telegram"),
-    };
-    match engine.runtime.block_on(engine.client.resolve_username(&username)) {
-        Ok(Some(peer)) => ok(peer.name().unwrap_or("Без имени").to_string()),
-        Ok(None) => err("пользователь не найден"),
-        Err(e) => err(e.to_string()),
-    }
-}
-
-fn dialogs() -> String {
-    let mut slot = match engine_slot().lock() {
-        Ok(value) => value,
-        Err(_) => return err("внутреннее состояние Rust повреждено"),
-    };
-    let engine = match slot.as_mut() {
-        Some(value) => value,
-        None => return err("сначала подключись к Telegram"),
-    };
-
-    let result = engine.runtime.block_on(async {
-        let mut dialogs = engine.client.iter_dialogs();
-        let mut lines = Vec::new();
-        while let Some(dialog) = dialogs.next().await.map_err(|e| e.to_string())? {
-            let peer = dialog.peer();
-            let title = peer.name().unwrap_or("Без названия").replace('|', " ");
-            let username = peer.username().unwrap_or("").replace('|', " ");
-            let (preview, date) = dialog
-                .last_message
-                .as_ref()
-                .map(|message| {
-                    (
-                        message
-                            .text()
-                            .replace('|', " ")
-                            .replace('\n', " ")
-                            .replace('\r', " ")
-                            .replace('\t', " ")
-                            .trim()
-                            .to_string(),
-                        message.date().to_string(),
-                    )
-                })
-                .unwrap_or_else(|| ("Нет сообщений".to_string(), String::new()));
-            lines.push(format!(
-                "{}|{}|{}|{}|{}",
-                lines.len(),
-                title,
-                if preview.is_empty() { "Медиа" } else { &preview },
-                date,
-                username
-            ));
-        }
-        Ok::<_, String>(lines)
-    });
-
-    match result {
-        Ok(lines) if lines.is_empty() => ok("Диалогов пока не найдено."),
-        Ok(lines) => lines.join("\n"),
-        Err(e) => err(e),
-    }
-}
-
-fn with_dialog<F, Fut, T>(engine: &mut Engine, index: usize, action: F) -> Result<T, String>
-where
-    F: FnOnce(grammers_session::types::PeerRef, Client) -> Fut,
-    Fut: std::future::Future<Output = Result<T, String>>,
-{
-    engine.runtime.block_on(async {
-        let mut dialogs = engine.client.iter_dialogs();
-        let mut current = 0usize;
-        while let Some(dialog) = dialogs.next().await.map_err(|e| e.to_string())? {
-            if current == index {
-                return action(dialog.peer_ref(), engine.client.clone()).await;
-            }
-            current += 1;
-        }
-        Err(format!("диалог с номером {} не найден", index + 1))
-    })
-}
-
-fn messages(index: usize) -> String {
-    let mut slot = match engine_slot().lock() {
-        Ok(value) => value,
-        Err(_) => return err("внутреннее состояние Rust повреждено"),
-    };
-    let engine = match slot.as_mut() {
-        Some(value) => value,
-        None => return err("сначала подключись к Telegram"),
-    };
-
-    let result = with_dialog(engine, index, |peer, client| async move {
-        // Без лимита: Telegram сам отдаёт историю страницами, а iterator
-        // продолжает запрашивать следующие страницы до конца диалога.
-        let mut iterator = client.iter_messages(peer);
-        let mut lines = Vec::new();
-        while let Some(message) = iterator.next().await.map_err(|e| e.to_string())? {
-            let text = message.text().trim();
-            if !text.is_empty() || message.media().is_some() {
-                let direction = if message.outgoing() { "OUT" } else { "IN" };
-                let body = if text.is_empty() { "Медиа" } else { text };
-                let body = body
-                    .replace('\t', " ")
-                    .replace('\n', " ")
-                    .replace('\r', " ");
-                lines.push(format!(
-                    "{}\t{}\t#{} {}",
-                    direction,
-                    message.date(),
-                    message.id(),
-                    body
-                ));
-            }
-        }
-        lines.reverse();
-        Ok::<_, String>(lines)
-    });
-
-    match result {
-        Ok(lines) if lines.is_empty() => ok("В этом диалоге пока нет текстовых сообщений."),
-        Ok(lines) => lines.join("\n"),
-        Err(e) => err(e),
-    }
-}
-
-fn send_message(index: usize, text: String) -> String {
-    let text = text.trim().to_string();
-    if text.is_empty() {
-        return err("сообщение пустое");
-    }
-
-    let mut slot = match engine_slot().lock() {
-        Ok(value) => value,
-        Err(_) => return err("внутреннее состояние Rust повреждено"),
-    };
-    let engine = match slot.as_mut() {
-        Some(value) => value,
-        None => return err("сначала подключись к Telegram"),
-    };
-
-    let result = with_dialog(engine, index, |peer, client| async move {
-        client
-            .send_message(peer, text)
-            .await
-            .map(|_| "Сообщение отправлено.".to_string())
-            .map_err(|e| e.to_string())
-    });
-
-    match result {
-        Ok(value) => ok(value),
-        Err(e) => err(e),
-    }
-}
-
-fn send_file(index: usize, path: String, caption: String) -> String {
-    if path.trim().is_empty() {
-        return err("файл не выбран");
-    }
-    let mut slot = match engine_slot().lock() {
-        Ok(value) => value,
-        Err(_) => return err("внутреннее состояние Rust повреждено"),
-    };
-    let engine = match slot.as_mut() {
-        Some(value) => value,
-        None => return err("сначала подключись к Telegram"),
-    };
-
-    let result = with_dialog(engine, index, |peer, client| async move {
-        let uploaded = client.upload_file(&path).await.map_err(|e| e.to_string())?;
-        client
-            .send_message(peer, InputMessage::new().file(uploaded).text(caption))
-            .await
-            .map(|_| "Файл отправлен.".to_string())
-            .map_err(|e| e.to_string())
-    });
-
-    match result {
-        Ok(value) => ok(value),
-        Err(e) => err(e),
-    }
-}
-
-fn jstring(env: &mut JNIEnv, value: String) -> jstring {
-    env.new_string(value).unwrap().into_raw()
-}
-
-fn take_string(env: &mut JNIEnv, value: JString) -> Result<String, String> {
-    env.get_string(&value)
-        .map(|s| s.to_string_lossy().into_owned())
-        .map_err(|e| e.to_string())
-}
-
-#[no_mangle]
-pub extern "system" fn Java_com_example_telegramrust_RustBridge_nativeBuildInfo(
-    mut env: JNIEnv,
-    _class: JClass,
-) -> jstring {
-    jstring(&mut env, ok("Rust-ядро подключено успешно"))
-}
-
-#[no_mangle]
-pub extern "system" fn Java_com_example_telegramrust_RustBridge_nativeRequestCode(
-    mut env: JNIEnv,
-    _class: JClass,
-    api_id: jint,
-    api_hash: JString,
-    phone: JString,
-    session_path: JString,
-) -> jstring {
-    let values = (
-        take_string(&mut env, api_hash),
-        take_string(&mut env, phone),
-        take_string(&mut env, session_path),
-    );
-    let value = match values {
-        (Ok(api_hash), Ok(phone), Ok(session_path))
-            if api_id > 0 && !api_hash.is_empty() && !phone.is_empty() =>
-        {
-            start_login(api_id, api_hash, phone, session_path)
-        }
-        _ => err("проверь API ID, API hash и номер телефона"),
-    };
-    jstring(&mut env, value)
-}
-
-#[no_mangle]
-pub extern "system" fn Java_com_example_telegramrust_RustBridge_nativeRequestQr(
-    mut env: JNIEnv,
-    _class: JClass,
-    api_id: jint,
-    api_hash: JString,
-    session_path: JString,
-) -> jstring {
-    let values = (take_string(&mut env, api_hash), take_string(&mut env, session_path));
-    let value = match values {
-        (Ok(api_hash), Ok(session_path)) if api_id > 0 && !api_hash.is_empty() => {
-            request_qr(api_id, api_hash, session_path)
-        }
-        _ => err("проверь API ID и API hash"),
-    };
-    jstring(&mut env, value)
-}
-
-#[no_mangle]
-pub extern "system" fn Java_com_example_telegramrust_RustBridge_nativeCheckQr(
-    mut env: JNIEnv,
-    _class: JClass,
-) -> jstring {
-    jstring(&mut env, check_qr())
-}
-
-#[no_mangle]
-pub extern "system" fn Java_com_example_telegramrust_RustBridge_nativeSubmitCode(
-    mut env: JNIEnv,
-    _class: JClass,
-    code: JString,
-) -> jstring {
-    let value = match take_string(&mut env, code) {
-        Ok(code) => submit_code(code),
-        Err(e) => err(e),
-    };
-    jstring(&mut env, value)
-}
-
-#[no_mangle]
-pub extern "system" fn Java_com_example_telegramrust_RustBridge_nativeSubmitPassword(
-    mut env: JNIEnv,
-    _class: JClass,
-    password: JString,
-) -> jstring {
-    let value = match take_string(&mut env, password) {
-        Ok(password) => submit_password(password),
-        Err(e) => err(e),
-    };
-    jstring(&mut env, value)
-}
-
-
-#[no_mangle]
-pub extern "system" fn Java_com_example_telegramrust_RustBridge_nativeSearchUsername(
-    mut env: JNIEnv,
-    _class: JClass,
-    query: JString,
-) -> jstring {
-    let value = match take_string(&mut env, query) {
-        Ok(query) => search_username(query),
-        Err(e) => err(e),
-    };
-    jstring(&mut env, value)
-}
-
-#[no_mangle]
-pub extern "system" fn Java_com_example_telegramrust_RustBridge_nativeDialogs(
-    mut env: JNIEnv,
-    _class: JClass,
-) -> jstring {
-    jstring(&mut env, dialogs())
-}
-
-#[no_mangle]
-pub extern "system" fn Java_com_example_telegramrust_RustBridge_nativeMessages(
-    mut env: JNIEnv,
-    _class: JClass,
-    index: jint,
-) -> jstring {
-    let value = if index < 0 {
-        err("неверный номер диалога")
-    } else {
-        messages(index as usize)
-    };
-    jstring(&mut env, value)
-}
-
-#[no_mangle]
-pub extern "system" fn Java_com_example_telegramrust_RustBridge_nativeSendMessage(
-    mut env: JNIEnv,
-    _class: JClass,
-    index: jint,
-    text: JString,
-) -> jstring {
-    let value = match take_string(&mut env, text) {
-        Ok(text) if index >= 0 => send_message(index as usize, text),
-        Ok(_) => err("неверный номер диалога"),
-        Err(e) => err(e),
-    };
-    jstring(&mut env, value)
-}
-
-#[no_mangle]
-pub extern "system" fn Java_com_example_telegramrust_RustBridge_nativeSendFile(
-    mut env: JNIEnv,
-    _class: JClass,
-    index: jint,
-    path: JString,
-    caption: JString,
-) -> jstring {
-    let values = (take_string(&mut env, path), take_string(&mut env, caption));
-    let value = match values {
-        (Ok(path), Ok(caption)) if index >= 0 => send_file(index as usize, path, caption),
-        (Ok(_), Ok(_)) => err("неверный номер диалога"),
-        (Err(e), _) | (_, Err(e)) => err(e),
-    };
-    jstring(&mut env, value)
-}
+fn check_qr() -> String { with_engine(|e| { let s=state(e)?; if s=="authorizationStateReady" { Ok("QR-вход подтверждён".into()) } else { Ok("QR ещё не подтверждён".into()) } }) }
+fn code(v: String) -> String { with_engine(|e| { request(e,json!({"@type":"checkAuthenticationCode","code":v}))?; Ok("Код принят. Если включён 2FA, введи пароль".into()) }) }
+fn password(v: String) -> String { with_engine(|e| { request(e,json!({"@type":"checkAuthenticationPassword","password":v}))?; Ok("Вход выполнен".into()) }) }
+fn dialogs() -> String { with_engine(|e| { let r=request(e,json!({"@type":"getChats","chat_list":{"@type":"chatListMain"},"limit":100}))?; let ids=r.get("chat_ids").and_then(Value::as_array).cloned().unwrap_or_default(); let mut out=Vec::new(); for (i,v) in ids.iter().enumerate() { let id=v.as_i64().unwrap_or(0); if id==0 {continue} let c=request(e,json!({"@type":"getChat","chat_id":id}))?; cache_chat(e,&c); let title=c.get("title").and_then(Value::as_str).unwrap_or("Без названия").replace('|'," "); let user=c.pointer("usernames.editable_username").and_then(Value::as_str).unwrap_or("").replace('|'," "); let date=c.pointer("last_message.date").and_then(Value::as_i64).unwrap_or(0); out.push(format!("{}|{}|Последние сообщения|{}|{}",i,title,date,user)); } Ok(out.join("\n")) }) }
+fn messages(index: usize, offset_id: i64, limit: i32) -> String { with_engine(|e| { let id=*e.chats.get(index).ok_or_else(||"диалог не найден".to_string())?; let r=request(e,json!({"@type":"getChatHistory","chat_id":id,"from_message_id":offset_id,"offset":0,"limit":if limit>0 {limit.min(100)} else {100},"only_local":false}))?; let list=r.get("messages").and_then(Value::as_array).cloned().unwrap_or_default(); let mut out=Vec::new(); for m in &list { let mid=m.get("id").and_then(Value::as_i64).unwrap_or(0); let date=m.get("date").and_then(Value::as_i64).unwrap_or(0); let dir=if m.get("is_outgoing").and_then(Value::as_bool).unwrap_or(false){"OUT"}else{"IN"}; let text=m.pointer("content.text.text").and_then(Value::as_str).unwrap_or("Медиа").replace('\t'," ").replace('\n'," ").replace('\r'," "); out.push(format!("{}\t{}\t#{} {}",dir,date,mid,text)); } out.reverse(); Ok(out.join("\n")) }) }
+fn send_message(index: usize, text: String) -> String { with_engine(|e| { let id=*e.chats.get(index).ok_or_else(||"диалог не найден".to_string())?; request(e,json!({"@type":"sendMessage","chat_id":id,"options":{"@type":"messageSendOptions","disable_notification":false,"from_background":false,"protect_content":false,"update_order_of_installed_sticker_sets":false},"input_message_content":{"@type":"inputMessageText","text":{"@type":"formattedText","text":text,"entities":[]},"clear_draft":true,"link_preview_options":null}}))?; Ok("Сообщение отправлено".into()) }) }
+fn send_file(index: usize, path: String, caption: String) -> String { with_engine(|e| { let id=*e.chats.get(index).ok_or_else(||"диалог не найден".to_string())?; request(e,json!({"@type":"sendMessage","chat_id":id,"options":{"@type":"messageSendOptions","disable_notification":false,"from_background":false,"protect_content":false,"update_order_of_installed_sticker_sets":false},"input_message_content":{"@type":"inputMessageDocument","document":{"@type":"inputFileLocal","path":path},"thumbnail":null,"disable_content_type_detection":false,"caption":{"@type":"formattedText","text":caption,"entities":[]}}}))?; Ok("Файл отправлен".into()) }) }
+fn search(v: String) -> String { with_engine(|e| { let u=v.trim().trim_start_matches('@'); let c=request(e,json!({"@type":"searchPublicChat","username":u}))?; Ok(format!("{} (@{})",c.get("title").and_then(Value::as_str).unwrap_or("Пользователь"),u)) }) }
+fn take(e:&mut JNIEnv,s:JString)->Result<String,String>{e.get_string(&s).map(|x|x.into()).map_err(|x|x.to_string())} fn js(e:&mut JNIEnv,s:String)->jstring{e.new_string(s).unwrap().into_raw()}
+#[no_mangle] pub extern "system" fn Java_com_example_telegramrust_RustBridge_nativeBuildInfo(mut e:JNIEnv,_:JClass)->jstring{js(&mut e,"Rust + TDLib JSON".into())}
+#[no_mangle] pub extern "system" fn Java_com_example_telegramrust_RustBridge_nativeRequestCode(mut e:JNIEnv,_:JClass,id:jint,h:JString,p:JString,s:JString)->jstring{let v=match(take(&mut e,h),take(&mut e,p),take(&mut e,s)){(Ok(h),Ok(p),Ok(s))=>request_code(id,h,p,s),(Err(x),_,_)|(_,Err(x),_)|(_,_,Err(x))=>error(x)};js(&mut e,v)}
+#[no_mangle] pub extern "system" fn Java_com_example_telegramrust_RustBridge_nativeRequestQr(mut e:JNIEnv,_:JClass,id:jint,h:JString,s:JString)->jstring{let v=match(take(&mut e,h),take(&mut e,s)){(Ok(h),Ok(s))=>qr(id,h,s),(Err(x),_)|(_,Err(x))=>error(x)};js(&mut e,v)}
+#[no_mangle] pub extern "system" fn Java_com_example_telegramrust_RustBridge_nativeCheckQr(mut e:JNIEnv,_:JClass)->jstring{js(&mut e,check_qr())}
+#[no_mangle] pub extern "system" fn Java_com_example_telegramrust_RustBridge_nativeSubmitCode(mut e:JNIEnv,_:JClass,v:JString)->jstring{let x=take(&mut e,v).map(code).unwrap_or_else(error);js(&mut e,x)}
+#[no_mangle] pub extern "system" fn Java_com_example_telegramrust_RustBridge_nativeSubmitPassword(mut e:JNIEnv,_:JClass,v:JString)->jstring{let x=take(&mut e,v).map(password).unwrap_or_else(error);js(&mut e,x)}
+#[no_mangle] pub extern "system" fn Java_com_example_telegramrust_RustBridge_nativeDialogs(mut e:JNIEnv,_:JClass)->jstring{js(&mut e,dialogs())}
+#[no_mangle] pub extern "system" fn Java_com_example_telegramrust_RustBridge_nativeSearchUsername(mut e:JNIEnv,_:JClass,v:JString)->jstring{let x=take(&mut e,v).map(search).unwrap_or_else(error);js(&mut e,x)}
+#[no_mangle] pub extern "system" fn Java_com_example_telegramrust_RustBridge_nativeMessages(mut e:JNIEnv,_:JClass,index:jint,offset:jint,limit:jint)->jstring{let x=if index<0{error("неверный диалог")}else{messages(index as usize,offset as i64,limit)};js(&mut e,x)}
+#[no_mangle] pub extern "system" fn Java_com_example_telegramrust_RustBridge_nativeSendMessage(mut e:JNIEnv,_:JClass,index:jint,v:JString)->jstring{let x=match take(&mut e,v){Ok(v)if index>=0=>send_message(index as usize,v),Ok(_)=>error("неверный диалог"),Err(x)=>error(x)};js(&mut e,x)}
+#[no_mangle] pub extern "system" fn Java_com_example_telegramrust_RustBridge_nativeSendFile(mut e:JNIEnv,_:JClass,index:jint,p:JString,c:JString)->jstring{let x=match(take(&mut e,p),take(&mut e,c)){(Ok(p),Ok(c))if index>=0=>send_file(index as usize,p,c),(Ok(_),Ok(_))=>error("неверный диалог"),(Err(x),_)|(_,Err(x))=>error(x)};js(&mut e,x)}
