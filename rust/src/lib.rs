@@ -59,7 +59,9 @@ fn new_engine(id: i32, hash: String, session: &str) -> Result<Engine, String> {
     let _ = fs::create_dir_all(Path::new(session)); let client = unsafe { td_json_client_create() };
     if client.is_null() { return Err("не удалось создать TDLib client".into()); } unsafe { td_set_log_verbosity_level(0); }
     let mut e = Engine { client, api_id: id, api_hash: hash, serial: 0, chats: Vec::new(), names: HashMap::new() };
-    request(&mut e, json!({"@type":"setTdlibParameters","parameters":{"@type":"tdlibParameters","database_directory":session,"files_directory":session,"use_file_database":true,"use_chat_info_database":true,"use_message_database":true,"use_secret_chats":false,"api_id":e.api_id,"api_hash":e.api_hash,"system_language_code":"ru","device_model":"Android","system_version":"Android","application_version":"RustGram TDLib","enable_storage_optimizer":true,"use_test_dc":false}}))?;
+    let configured_api_id = e.api_id;
+    let configured_api_hash = e.api_hash.clone();
+    request(&mut e, json!({"@type":"setTdlibParameters","parameters":{"@type":"tdlibParameters","database_directory":session,"files_directory":session,"use_file_database":true,"use_chat_info_database":true,"use_message_database":true,"use_secret_chats":false,"api_id":configured_api_id,"api_hash":configured_api_hash,"system_language_code":"ru","device_model":"Android","system_version":"Android","application_version":"RustGram TDLib","enable_storage_optimizer":true,"use_test_dc":false}}))?;
     request(&mut e, json!({"@type":"checkDatabaseEncryptionKey","encryption_key":""}))?; Ok(e)
 }
 fn with_engine<F: FnOnce(&mut Engine) -> Result<String, String>>(f: F) -> String {
