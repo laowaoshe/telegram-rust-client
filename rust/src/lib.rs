@@ -56,12 +56,19 @@ fn request(e: &mut Engine, value: Value) -> Result<Value, String> {
     Err("TDLib не ответил вовремя".into())
 }
 fn new_engine(id: i32, hash: String, session: &str) -> Result<Engine, String> {
-    let _ = fs::create_dir_all(Path::new(session)); let client = unsafe { td_json_client_create() };
+    // The old Grammers backend used telegram.session as a file. TDLib needs
+    // directories, so keep its database/files in fresh, dedicated folders.
+    let session_root = Path::new(session).parent().unwrap_or_else(|| Path::new(session));
+    let database_directory = session_root.join("rustgram-tdlib-db");
+    let files_directory = session_root.join("rustgram-tdlib-files");
+    let _ = fs::create_dir_all(&database_directory);
+    let _ = fs::create_dir_all(&files_directory);
+    let client = unsafe { td_json_client_create() };
     if client.is_null() { return Err("не удалось создать TDLib client".into()); } unsafe { td_set_log_verbosity_level(0); }
     let mut e = Engine { client, api_id: id, api_hash: hash, serial: 0, chats: Vec::new(), names: HashMap::new() };
     let configured_api_id = e.api_id;
     let configured_api_hash = e.api_hash.clone();
-    request(&mut e, json!({"@type":"setTdlibParameters","parameters":{"@type":"tdlibParameters","database_directory":session,"files_directory":session,"use_file_database":true,"use_chat_info_database":true,"use_message_database":true,"use_secret_chats":false,"api_id":configured_api_id,"api_hash":configured_api_hash,"system_language_code":"ru","device_model":"Android","system_version":"Android","application_version":"RustGram TDLib","enable_storage_optimizer":true,"use_test_dc":false}}))?;
+    request(&mut e, json!({"@type":"setTdlibParameters","parameters":{"@type":"tdlibParameters","database_directory":database_directory.to_string_lossy().to_string(),"files_directory":files_directory.to_string_lossy().to_string(),"use_file_database":true,"use_chat_info_database":true,"use_message_database":true,"use_secret_chats":false,"api_id":configured_api_id,"api_hash":configured_api_hash,"system_language_code":"ru","device_model":"Android","system_version":"Android","application_version":"RustGram TDLib","enable_storage_optimizer":true,"use_test_dc":false}}))?;
     request(&mut e, json!({"@type":"checkDatabaseEncryptionKey","encryption_key":""}))?; Ok(e)
 }
 fn with_engine<F: FnOnce(&mut Engine) -> Result<String, String>>(f: F) -> String {
@@ -74,7 +81,7 @@ fn ensure(id: i32, hash: String, session: String) -> Result<(), String> {
 }
 fn state(e: &mut Engine) -> Result<String, String> { Ok(request(e, json!({"@type":"getAuthorizationState"}))?.get("@type").and_then(Value::as_str).unwrap_or("").into()) }
 fn request_code(id: i32, hash: String, phone: String, session: String) -> String {
-    if let Err(x) = ensure(id, hash, session) { return error(x); }
+    if let Err(x) = ensure(id, hash, session) { return error(format!("{x} (api_id={id})")); }
     with_engine(|e| { if state(e)? == "authorizationStateReady" { return Ok("Уже выполнен вход".into()); }
         request(e, json!({"@type":"setAuthenticationPhoneNumber","phone_number":phone,"settings":{"@type":"phoneNumberAuthenticationSettings","allow_flash_call":false,"allow_missed_call":false,"is_current_phone_number":false,"has_unknown_phone_number":false,"allow_sms_retriever_api":false}}))?;
         Ok("Код отправлен в Telegram или SMS".into()) })
