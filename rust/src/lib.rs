@@ -69,7 +69,7 @@ fn new_engine(id: i32, hash: String, session: &str) -> Result<Engine, String> {
     let configured_api_id = e.api_id;
     let configured_api_hash = e.api_hash.clone();
     request(&mut e, json!({"@type":"setTdlibParameters","database_directory":database_directory.to_string_lossy().to_string(),"files_directory":files_directory.to_string_lossy().to_string(),"use_file_database":true,"use_chat_info_database":true,"use_message_database":true,"use_secret_chats":false,"api_id":configured_api_id,"api_hash":configured_api_hash,"system_language_code":"ru","device_model":"Android","system_version":"Android","application_version":"RustGram TDLib","enable_storage_optimizer":true,"use_test_dc":false}))?;
-    request(&mut e, json!({"@type":"checkDatabaseEncryptionKey","encryption_key":""}))?; Ok(e)
+    request(&mut e, json!({"@type":"setDatabaseEncryptionKey","new_encryption_key":""}))?; Ok(e)
 }
 fn with_engine<F: FnOnce(&mut Engine) -> Result<String, String>>(f: F) -> String {
     let mut g = match slot().lock() { Ok(x) => x, Err(_) => return error("внутреннее состояние Rust повреждено") };
